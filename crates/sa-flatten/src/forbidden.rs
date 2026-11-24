@@ -68,6 +68,19 @@ fn find_forbidden(raw: &str) -> Option<&'static str> {
             if !matches {
                 continue;
             }
+            if *pattern == "fn " {
+                let mut next = i + 3;
+                while next < chars.len() && chars[next] == ' ' {
+                    next += 1;
+                }
+                let name_start = next;
+                while next < chars.len() && is_word_char(chars[next]) {
+                    next += 1;
+                }
+                if next == name_start || next >= chars.len() || chars[next] != '(' {
+                    continue;
+                }
+            }
             let starts_word = pattern
                 .chars()
                 .next()

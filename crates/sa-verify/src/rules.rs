@@ -115,14 +115,18 @@ fn read_operand(ctx: &mut RuleCtx, op: &Operand, state: &FnState, loc: &SourceLo
             Some(format!("do not read '{name}' after it was moved or released")),
             false,
         ),
-        RegState::Borrowed { mutable: true, .. } => ctx.report(
-            Trap::BorrowConflict,
-            format!("register '{name}' is exclusively borrowed and cannot be read"),
-            loc,
-            Some(name),
-            None,
-            false,
-        ),
+        RegState::Borrowed { mutable: true, .. } => {
+            if !state.borrow_origin.contains_key(name) {
+                ctx.report(
+                    Trap::BorrowConflict,
+                    format!("register '{name}' is exclusively borrowed and cannot be read"),
+                    loc,
+                    Some(name),
+                    None,
+                    false,
+                );
+            }
+        }
         _ => {}
     }
 }
@@ -302,6 +306,9 @@ fn add_borrow(
 }
 
 fn release(ctx: &mut RuleCtx, state: &mut FnState, reg: &str, loc: &SourceLoc) {
+    if matches!(state.state_of(reg), RegState::Owned { kind: RegKind::Scalar }) {
+        return;
+    }
     match state.state_of(reg) {
         RegState::Undefined => ctx.report(
             Trap::UnknownRegister,
@@ -530,13 +537,12 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
             for operand in ins.reads() {
                 read_operand(ctx, operand, state, loc);
             }
-            define(
-                ctx,
-                ins,
-                state,
-                RegState::Owned { kind: RegKind::Alloc },
-                loc,
-            );
+            let kind = if matches!(ins.kind, InstructionKind::StackAlloc { .. }) {
+                RegKind::StackAlloc
+            } else {
+                RegKind::Alloc
+            };
+            define(ctx, ins, state, RegState::Owned { kind }, loc);
         }
         InstructionKind::Assign { src } => {
             let scalar = is_scalar_operand(ctx, state, src);

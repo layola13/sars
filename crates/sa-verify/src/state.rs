@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegKind {
     Alloc,
+    StackAlloc,
     Value,
     Scalar,
     Param,
