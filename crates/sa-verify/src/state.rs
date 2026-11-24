@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 pub enum RegKind {
     Alloc,
     Value,
+    Scalar,
     Param,
     Ref,
 }

@@ -43,6 +43,7 @@ impl<'a> RuleCtx<'a> {
 
 fn check_redefine(ctx: &mut RuleCtx, state: &FnState, reg: &str, loc: &SourceLoc) {
     match state.state_of(reg) {
+        RegState::Owned { kind: RegKind::Scalar } => return,
         RegState::Owned { .. } => ctx.report(
             Trap::RegisterRedefinition,
             format!("register '{reg}' is already live"),
@@ -168,6 +169,16 @@ fn consume(ctx: &mut RuleCtx, state: &mut FnState, op: &Operand, loc: &SourceLoc
             false,
         ),
         _ => state.set(name, RegState::Moved),
+    }
+}
+
+fn is_scalar_operand(ctx: &RuleCtx, state: &FnState, op: &Operand) -> bool {
+    match op {
+        Operand::Reg(name) => matches!(
+            state.state_of(name),
+            RegState::Owned { kind: RegKind::Scalar }
+        ),
+        _ => !matches!(op, Operand::Symbol(_) | Operand::Label(_)),
     }
 }
 
@@ -528,8 +539,16 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
             );
         }
         InstructionKind::Assign { src } => {
+            let scalar = is_scalar_operand(ctx, state, src);
             consume_assign(ctx, state, src, loc);
-            define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
+            let kind = if scalar { RegKind::Scalar } else { RegKind::Value };
+            define(ctx, ins, state, RegState::Owned { kind }, loc);
+        }
+        InstructionKind::Op { .. } | InstructionKind::Load { .. } | InstructionKind::Take { .. } => {
+            for operand in ins.reads() {
+                read_operand(ctx, operand, state, loc);
+            }
+            define(ctx, ins, state, RegState::Owned { kind: RegKind::Scalar }, loc);
         }
         InstructionKind::Move { src } => {
             consume(ctx, state, src, loc);
