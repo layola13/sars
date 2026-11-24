@@ -549,11 +549,6 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
             define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
         }
         InstructionKind::Release { reg } => release(ctx, state, reg, loc),
-        InstructionKind::Take { reg } => {
-            let operand = Operand::Reg(reg.clone());
-            read_operand(ctx, &operand, state, loc);
-            define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
-        }
         InstructionKind::Borrow { src, mutable } | InstructionKind::AssumeBorrow { src, mutable } => {
             if let Some(dest) = ins.dest.as_deref() {
                 check_redefine(ctx, state, dest, loc);

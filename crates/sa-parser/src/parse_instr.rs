@@ -88,13 +88,26 @@ pub(crate) fn parse_instruction(
             else_label: join(&parts[1]),
         }
     } else if first.is_ident("br_null") {
-        let parts = split_commas(&work[1..]);
-        if parts.len() < 2 {
-            return missing_operand(diags, loc, function, "br_null");
-        }
-        InstructionKind::BrNull {
-            cond: Operand::parse(&join(&parts[0])),
-            target: join(&parts[1]),
+        if let Some(arrow) = work.iter().position(|t| t.kind == TokenKind::Arrow) {
+            let parts = split_commas(&work[arrow + 1..]);
+            if parts.is_empty() {
+                return missing_operand(diags, loc, function, "br_null");
+            }
+            InstructionKind::BrNull {
+                cond: Operand::parse(&join(&work[1..arrow])),
+                target: join(&parts[0]),
+                else_target: parts.get(1).map(|p| join(p)),
+            }
+        } else {
+            let parts = split_commas(&work[1..]);
+            if parts.len() < 2 {
+                return missing_operand(diags, loc, function, "br_null");
+            }
+            InstructionKind::BrNull {
+                cond: Operand::parse(&join(&parts[0])),
+                target: join(&parts[1]),
+                else_target: None,
+            }
         }
     } else if first.is_ident("call") {
         let lp = work.iter().position(|t| t.kind == TokenKind::LParen);
@@ -266,7 +279,7 @@ pub(crate) fn parse_instruction(
         }
     } else if first.is_ident("take") {
         InstructionKind::Take {
-            reg: join(&work[1..]),
+            addr: Address::parse(&join(&work[1..])),
         }
     } else if first.is_ident("va_start") {
         InstructionKind::VaStart
@@ -542,7 +555,15 @@ mod tests {
         );
         assert_eq!(
             parse("br_null p, L_NULL").kind,
-            InstructionKind::BrNull { cond: Operand::reg("p"), target: "L_NULL".into() }
+            InstructionKind::BrNull { cond: Operand::reg("p"), target: "L_NULL".into(), else_target: None }
+        );
+        assert_eq!(
+            parse("br_null p -> L_NULL, L_NOTNULL").kind,
+            InstructionKind::BrNull {
+                cond: Operand::reg("p"),
+                target: "L_NULL".into(),
+                else_target: Some("L_NOTNULL".into()),
+            }
         );
         assert_eq!(parse("return").kind, InstructionKind::Return { value: None });
         assert_eq!(
@@ -570,7 +591,14 @@ mod tests {
             InstructionKind::AssumeBorrow { src: Operand::reg("x"), mutable: true }
         );
         assert_eq!(parse("!x").kind, InstructionKind::Release { reg: "x".into() });
-        assert_eq!(parse("take x").kind, InstructionKind::Take { reg: "x".into() });
+        assert_eq!(
+            parse("take x").kind,
+            InstructionKind::Take { addr: sa_ir::Address::new(Operand::reg("x"), 0) }
+        );
+        assert_eq!(
+            parse("take buf+8").kind,
+            InstructionKind::Take { addr: sa_ir::Address::new(Operand::reg("buf"), 8) }
+        );
     }
 
     #[test]

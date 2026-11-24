@@ -484,11 +484,11 @@ pub enum InstructionKind {
     Op { op: OpKind, args: Vec<Operand> },
     Jmp { target: String },
     Br { cond: Operand, then_label: String, else_label: String },
-    BrNull { cond: Operand, target: String },
+    BrNull { cond: Operand, target: String, else_target: Option<String> },
     Call { target: String, args: Vec<CallArg> },
     CallIndirect { target: Operand, args: Vec<CallArg> },
     Return { value: Option<Operand> },
-    Take { reg: String },
+    Take { addr: Address },
     Release { reg: String },
     Assign { src: Operand },
     Move { src: Operand },
@@ -615,8 +615,8 @@ impl Instruction {
                 out.push(value);
             }
             InstructionKind::Panic { args, .. } => out.extend(args.iter()),
-            InstructionKind::Take { .. }
-            | InstructionKind::Release { .. }
+            InstructionKind::Take { addr } => out.push(&addr.base),
+            InstructionKind::Release { .. }
             | InstructionKind::Jmp { .. }
             | InstructionKind::Fence { .. }
             | InstructionKind::VaStart
@@ -663,7 +663,10 @@ impl Instruction {
             InstructionKind::Br { cond, then_label, else_label } => {
                 format!("br {cond} -> {then_label}, {else_label}")
             }
-            InstructionKind::BrNull { cond, target } => format!("br_null {cond}, {target}"),
+            InstructionKind::BrNull { cond, target, else_target } => match else_target {
+                Some(other) => format!("br_null {cond} -> {target}, {other}"),
+                None => format!("br_null {cond}, {target}"),
+            },
             InstructionKind::Call { target, args } => {
                 let a: Vec<String> = args
                     .iter()
@@ -682,7 +685,7 @@ impl Instruction {
                 Some(v) => format!("return {v}"),
                 None => "return".to_string(),
             },
-            InstructionKind::Take { reg } => format!("take {reg}"),
+            InstructionKind::Take { addr } => format!("take {addr}"),
             InstructionKind::Release { reg } => format!("!{reg}"),
             InstructionKind::Assign { src } => src.to_string(),
             InstructionKind::Move { src } => format!("^{src}"),

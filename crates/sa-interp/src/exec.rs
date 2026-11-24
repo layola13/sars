@@ -224,10 +224,12 @@ impl<'a> Interpreter<'a> {
                     };
                     self.jump(frame, label)?;
                 }
-                InstructionKind::BrNull { cond, target } => {
+                InstructionKind::BrNull { cond, target, else_target } => {
                     let value = self.resolve(frame, cond)?;
                     if matches!(value, Value::Ptr(0) | Value::Int(0) | Value::Void) {
                         self.jump(frame, target)?;
+                    } else if let Some(other) = else_target {
+                        self.jump(frame, other)?;
                     }
                 }
                 InstructionKind::Call { target, args } => {
@@ -267,7 +269,13 @@ impl<'a> Interpreter<'a> {
                         None => Ok(Value::Void),
                     };
                 }
-                InstructionKind::Take { .. } | InstructionKind::Release { .. } => {}
+                InstructionKind::Take { addr } => {
+                    let ptr = self.resolve_addr(frame, addr)?;
+                    let ty = ins.ty.unwrap_or(PrimType::I64);
+                    let value = self.memory.load(ptr, ty)?;
+                    set_dest(frame, ins, value);
+                }
+                InstructionKind::Release { .. } => {}
                 InstructionKind::Assign { src }
                 | InstructionKind::Move { src }
                 | InstructionKind::Borrow { src, .. }

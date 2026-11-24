@@ -282,9 +282,14 @@ fn lower_instr(
             buf.push_indent(indent, &format!("bb = ({c}) ? {t} : {e}; break;"));
             return Ok(true);
         }
-        InstructionKind::BrNull { cond, target } => {
+        InstructionKind::BrNull { cond, target, else_target } => {
             let c = ctx.expr(cond).map_err(map_err)?;
             let id = ctx.label_id(target).map_err(map_err)?;
+            if let Some(other) = else_target {
+                let other_id = ctx.label_id(other).map_err(map_err)?;
+                buf.push_indent(indent, &format!("bb = ({c}) ? {other_id} : {id}; break;"));
+                return Ok(true);
+            }
             buf.push_indent(indent, &format!("if (({c}) == 0) {{ bb = {id}; break; }}"));
         }
         InstructionKind::Call { target, args } => {
@@ -332,9 +337,13 @@ fn lower_instr(
             }
             return Ok(true);
         }
-        InstructionKind::Take { reg } => {
-            let v = FuncCtx::reg_name(reg);
-            buf.push_indent(indent, &format!("{d} = {v};"));
+        InstructionKind::Take { addr } => {
+            let a = ctx.expr(&addr.base).map_err(map_err)?;
+            let off = addr.offset;
+            let a = if off == 0 { a } else { format!("sa_ptr_add({a}, {off})") };
+            let ty = ins.ty.unwrap_or(PrimType::I64);
+            let code = js_string(ty_code(ty));
+            buf.push_indent(indent, &format!("{d} = sa_load({a}, {code}, {});", ty.is_signed()));
         }
         InstructionKind::Release { .. } => {}
         InstructionKind::Assign { src } | InstructionKind::Move { src } => {

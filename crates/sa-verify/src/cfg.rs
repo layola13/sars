@@ -16,7 +16,10 @@ impl Cfg {
             InstructionKind::Br { then_label, else_label, .. } => {
                 Some(vec![then_label.as_str(), else_label.as_str()])
             }
-            InstructionKind::BrNull { target, .. } => Some(vec![target.as_str()]),
+            InstructionKind::BrNull { target, else_target, .. } => match else_target {
+                Some(other) => Some(vec![target.as_str(), other.as_str()]),
+                None => Some(vec![target.as_str()]),
+            },
             _ => None,
         }
     }

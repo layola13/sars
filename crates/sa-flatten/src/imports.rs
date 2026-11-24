@@ -89,9 +89,14 @@ fn rename_targets(kind: &mut InstructionKind, renamed: &HashMap<String, String>)
                 *else_label = new.clone();
             }
         }
-        InstructionKind::BrNull { target, .. } => {
+        InstructionKind::BrNull { target, else_target, .. } => {
             if let Some(new) = renamed.get(target) {
                 *target = new.clone();
+            }
+            if let Some(other) = else_target {
+                if let Some(new) = renamed.get(other) {
+                    *other = new.clone();
+                }
             }
         }
         _ => {}

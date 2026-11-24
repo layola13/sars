@@ -615,7 +615,7 @@ fn lower_instruction(
             emit_branch(out, then_label, labels, current, n, true);
             emit_branch(out, else_label, labels, current, n, false);
         }
-        InstructionKind::BrNull { cond, target } => {
+        InstructionKind::BrNull { cond, target, .. } => {
             emit_operand(out, cond, regs, VALTYPE_I64, loc, function, diags);
             put_u8(out, I64_EQZ);
             emit_branch(out, target, labels, current, n, true);

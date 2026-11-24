@@ -169,6 +169,7 @@ fn jump_and_br_null() {
         block("entry", vec![ins(InstructionKind::BrNull {
             cond: Operand::reg("x"),
             target: "L1".to_string(),
+            else_target: None,
         })]),
         block("L1", vec![ins(InstructionKind::Jmp { target: "L2".to_string() })]),
         block("L2", vec![ins(InstructionKind::Return { value: None })]),
