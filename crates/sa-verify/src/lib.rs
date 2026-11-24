@@ -5,7 +5,7 @@ pub mod state;
 #[cfg(test)]
 mod tests;
 
-use sa_ir::{Diagnostic, Function, Program, Trap};
+use sa_ir::{CapPrefix, Diagnostic, Function, Program, Trap};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
@@ -89,6 +89,9 @@ fn initial_state(function: &Function) -> FnState {
     let mut state = FnState::default();
     for param in &function.sig.params {
         state.set(&param.name, RegState::Owned { kind: RegKind::Param });
+        if param.cap == CapPrefix::Borrow {
+            state.borrow_params.insert(param.name.clone());
+        }
     }
     for local in &function.locals {
         if state.state_of(local) == RegState::Undefined {

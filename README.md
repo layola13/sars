@@ -16,15 +16,15 @@ every Rust source file stays below 1000 lines.
 | `sa-emit-js` | self-contained ESM/CJS JavaScript emitter |
 | `sa-emit-wasm` | WASI-oriented WASM binary emitter |
 | `sa-interp` | register interpreter for `sa run` |
-| `sa-cli` | `sa` command line driver |
+| `sa-cli` | `sars` command line driver (binary: `sars`) |
 
 ## Quick start
 
 ```bash
 cargo build --release
-./target/release/sa check  ../sci/demos/rosetta/13_array_sum/main.sa
-./target/release/sa run    ../sci/demos/rosetta/13_array_sum/main.sa
-./target/release/sa build-js ../sci/demos/rosetta/01_hello_world/main.sa -o hello.mjs
+./target/release/sars check  ../sci/demos/rosetta/13_array_sum/main.sa
+./target/release/sars run    ../sci/demos/rosetta/13_array_sum/main.sa
+./target/release/sars build-js ../sci/demos/rosetta/01_hello_world/main.sa -o hello.mjs
 ```
 
 ## Current status

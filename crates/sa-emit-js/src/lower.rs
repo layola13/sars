@@ -66,6 +66,8 @@ pub struct FuncCtx<'a> {
     pub bytes: &'a mut ByteConsts,
     pub fallible: bool,
     pub debug: bool,
+    pub wide: bool,
+    pub types: HashMap<String, PrimType>,
 }
 
 impl<'a> FuncCtx<'a> {
@@ -96,7 +98,13 @@ impl<'a> FuncCtx<'a> {
                 }
             }
             Operand::Label(name) => Ok(self.label_id(name)?.to_string()),
-            Operand::Int(v) => Ok(js_int(*v)),
+            Operand::Int(v) => {
+                if self.wide {
+                    Ok(format!("{v}n"))
+                } else {
+                    Ok(js_int(*v))
+                }
+            }
             Operand::Float(v) => Ok(js_float(*v)),
             Operand::Bytes(b) => Ok(self.bytes.symbol_for(b)),
             Operand::Utf8(s) => Ok(self.bytes.symbol_for(s.as_bytes())),
@@ -160,6 +168,13 @@ pub fn build_ctx<'a>(
         bytes,
         fallible: f.sig.return_fallible,
         debug,
+        wide: false,
+        types: f
+            .sig
+            .params
+            .iter()
+            .map(|p| (p.name.clone(), p.ty))
+            .collect(),
     }
 }
 
@@ -193,6 +208,10 @@ pub fn emit_function(
         }
         let mut terminated = false;
         for ins in &block.instrs {
+            ctx.wide = matches!(ins.ty, Some(PrimType::I64 | PrimType::U64));
+            if let (Some(dest), Some(ty)) = (ins.dest.as_deref(), ins.ty) {
+                ctx.types.insert(dest.to_string(), ty);
+            }
             terminated = lower_instr(ins, ctx, buf, 4, i, f.blocks.len())?;
         }
         if !terminated {
@@ -508,15 +527,22 @@ fn op_expr(op: OpKind, args: &[Operand], ty: Option<PrimType>, ctx: &mut FuncCtx
         OpKind::FcmpLe => binary("sa_fcmp_le", &a, &b),
         OpKind::FcmpGt => binary("sa_fcmp_gt", &a, &b),
         OpKind::FcmpGe => binary("sa_fcmp_ge", &a, &b),
-        OpKind::Trunc => cvt("trunc", &a, ty),
-        OpKind::Zext => cvt("zext", &a, ty),
-        OpKind::Sext => cvt("sext", &a, ty),
-        OpKind::Fptosi => cvt("fptosi", &a, ty),
-        OpKind::Sitofp => cvt("sitofp", &a, ty),
-        OpKind::Uitofp => cvt("uitofp", &a, ty),
-        OpKind::Fptrunc => cvt("fptrunc", &a, ty),
-        OpKind::Fpext => cvt("fpext", &a, ty),
-        OpKind::Bitcast => cvt("bitcast", &a, ty),
+        OpKind::Trunc => cvt("trunc", &a, ty, false),
+        OpKind::Zext => cvt("zext", &a, ty, false),
+        OpKind::Sext => cvt("sext", &a, ty, false),
+        OpKind::Fptosi => cvt("fptosi", &a, ty, false),
+        OpKind::Sitofp => cvt("sitofp", &a, ty, false),
+        OpKind::Uitofp => cvt("uitofp", &a, ty, false),
+        OpKind::Fptrunc => cvt("fptrunc", &a, ty, false),
+        OpKind::Fpext => cvt("fpext", &a, ty, false),
+        OpKind::Bitcast => {
+            let from_float = match arg(args, 0) {
+                Operand::Reg(name) => ctx.types.get(name).map(|ty| ty.is_float()).unwrap_or(false),
+                Operand::Float(_) => true,
+                _ => false,
+            };
+            cvt("bitcast", &a, ty, from_float)
+        }
         OpKind::AddV128 => v128("add", &a, &b),
         OpKind::SubV128 => v128("sub", &a, &b),
         OpKind::MulV128 => v128("mul", &a, &b),
@@ -526,14 +552,15 @@ fn op_expr(op: OpKind, args: &[Operand], ty: Option<PrimType>, ctx: &mut FuncCtx
     })
 }
 
-fn cvt(kind: &str, x: &str, ty: Option<PrimType>) -> String {
+fn cvt(kind: &str, x: &str, ty: Option<PrimType>, from_float: bool) -> String {
     let ty = ty.unwrap_or(PrimType::I64);
     format!(
-        "sa_cvt({}, {x}, {}, {}, {})",
+        "sa_cvt({}, {x}, {}, {}, {}, {})",
         js_string(kind),
         ty.bits(),
         ty.is_signed(),
-        ty.is_float()
+        ty.is_float(),
+        from_float
     )
 }
 

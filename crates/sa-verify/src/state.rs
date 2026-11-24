@@ -29,6 +29,7 @@ pub struct FnState {
     pub borrow_origin: HashMap<String, String>,
     pub origin_base: HashMap<String, RegState>,
     pub escaped: HashSet<String>,
+    pub borrow_params: HashSet<String>,
 }
 
 impl FnState {
@@ -46,6 +47,7 @@ impl FnState {
             && self.borrow_origin == other.borrow_origin
             && self.origin_base == other.origin_base
             && self.escaped == other.escaped
+            && self.borrow_params == other.borrow_params
     }
 
     pub fn merge(&self, other: &FnState) -> (FnState, Vec<(String, RegState, RegState)>) {
@@ -85,6 +87,7 @@ impl FnState {
             }
         }
         out.escaped = self.escaped.union(&other.escaped).cloned().collect();
+        out.borrow_params = self.borrow_params.union(&other.borrow_params).cloned().collect();
         (out, conflicts)
     }
 }

@@ -311,7 +311,7 @@ function sa_fcmp_ge(a, b) {
 }
 "##;
 
-const CVT: &str = r##"function sa_cvt(kind, x, bits, signed, tofloat) {
+const CVT: &str = r##"function sa_cvt(kind, x, bits, signed, tofloat, fromfloat) {
   if (kind === 'fptrunc') return Math.fround(sa_num(x));
   if (kind === 'fpext') return sa_num(x);
   if (kind === 'sitofp') return Number(sa_big(x));
@@ -330,12 +330,18 @@ const CVT: &str = r##"function sa_cvt(kind, x, bits, signed, tofloat) {
         SA_SCRATCH.setBigInt64(0, sa_big(x), true);
         return SA_SCRATCH.getFloat64(0, true);
       }
+      if (!fromfloat && (typeof x === 'bigint' || Number.isInteger(sa_num(x)))) {
+        return signed ? BigInt.asIntN(64, sa_big(x)) : BigInt.asUintN(64, sa_big(x));
+      }
       SA_SCRATCH.setFloat64(0, sa_num(x), true);
       return SA_SCRATCH.getBigInt64(0, true);
     }
     if (tofloat) {
       SA_SCRATCH.setInt32(0, sa_num(x) | 0, true);
       return SA_SCRATCH.getFloat32(0, true);
+    }
+    if (!fromfloat) {
+      return signed ? (sa_num(x) | 0) : (sa_num(x) >>> 0);
     }
     SA_SCRATCH.setFloat32(0, Math.fround(sa_num(x)), true);
     return SA_SCRATCH.getInt32(0, true);
@@ -351,15 +357,20 @@ const CVT: &str = r##"function sa_cvt(kind, x, bits, signed, tofloat) {
     if (typeof x === 'bigint') {
       return wide ? BigInt.asUintN(bits, x) : Number(BigInt.asUintN(bits, x));
     }
-    return signed ? (sa_num(x) | 0) : (sa_num(x) >>> 0);
+    if (wide) {
+      const u = BigInt.asUintN(32, BigInt(sa_num(x) | 0));
+      return signed ? BigInt.asIntN(bits, u) : BigInt.asUintN(bits, u);
+    }
+    const u = (sa_num(x) >>> 0) & ((2 ** bits) - 1);
+    const half = 2 ** (bits - 1);
+    return signed ? (u >= half ? u - 2 ** bits : u) : u;
   }
   if (kind === 'sext') {
     if (typeof x === 'bigint') {
       return wide ? BigInt.asIntN(bits, x) : Number(BigInt.asIntN(bits, x));
     }
     const w = BigInt(sa_num(x) | 0);
-    const m = 1n << BigInt(bits - 1);
-    const y = (w ^ m) - m;
+    const y = BigInt.asIntN(bits, w);
     return wide ? y : Number(y);
   }
   return x;
