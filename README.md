@@ -38,8 +38,9 @@ cargo build --release
   two-target `br_null`, address-based `take`, and import-relative resolution
   are implemented. The verifier models ephemeral scalars, mutable-borrow
   views and stack allocations per the Referee.
-- 835/970 demos build with `build-js` and exit 0 under Node 18 (zero
-  regressions vs. the previous release). `#npm_bind` externs emit ESM/CJS
+- 913/970 demos build with `build-js` and exit 0 under Node 18 (zero
+  regressions vs. the previous release); 806/970 run cleanly under the
+  register interpreter. `#npm_bind` externs emit ESM/CJS
   imports plus wrappers for call/ctor/method/get, UTF8 and bytes-view
   marshaling, string-out params and JS-to-SA callback queue draining;
   all ten npm rosetta demos pass end-to-end. VTable slots use the
@@ -51,4 +52,7 @@ cargo build --release
   out-of-bounds read under `run`); the interpreter models fallible values as
   plain values, so `?` on a null pointer propagates early (demo 372 runs its
   error branch); JS run coverage for struct/vtable-heavy and async demos;
-  native/LLVM and C backends are not ported.
+  native/LLVM and C backends are not ported. Fallible calls now carry an
+  explicit status in the interpreter (`?` unpacks success, including a
+  null payload), and `#def` offsets inside address operands are expanded
+  after macro flattening.

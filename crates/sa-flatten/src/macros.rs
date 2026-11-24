@@ -307,6 +307,22 @@ fn push_target(out: &mut String, token: &str, labels: &HashSet<String>, suffix: 
     }
 }
 
+fn copy_address(source: &sa_ir::InstructionKind, target: &mut sa_ir::InstructionKind) {
+    use sa_ir::InstructionKind as K;
+    match (source, target) {
+        (K::Load { addr: from }, K::Load { addr: to })
+        | (K::Take { addr: from }, K::Take { addr: to })
+        | (K::Store { addr: from, .. }, K::Store { addr: to, .. })
+        | (K::AtomicLoad { addr: from, .. }, K::AtomicLoad { addr: to, .. })
+        | (K::AtomicStore { addr: from, .. }, K::AtomicStore { addr: to, .. })
+        | (K::Cmpxchg { addr: from, .. }, K::Cmpxchg { addr: to, .. })
+        | (K::AtomicRmw { addr: from, .. }, K::AtomicRmw { addr: to, .. }) => {
+            *to = from.clone();
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn expand_program(
     program: &mut Program,
     diags: &mut Vec<Diagnostic>,
@@ -336,6 +352,9 @@ pub(crate) fn expand_program(
                     &[],
                     0,
                 );
+                if let Some(reparsed) = sa_parser::parse_instruction_line(&raw, &func) {
+                    copy_address(&reparsed.kind, &mut instruction.kind);
+                }
                 instruction.raw = raw;
                 rewrite_operands(&mut instruction.kind, &mut |operand| {
                     expand_operand(

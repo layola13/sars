@@ -36,6 +36,19 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, Vec<Diagnostic>> {
     }
 }
 
+pub fn parse_instruction_line(text: &str, function: &str) -> Option<sa_ir::Instruction> {
+    let tokens = tokenize(text, "inline.sa").ok()?;
+    let line: Vec<Token> = tokens
+        .into_iter()
+        .filter(|t| !matches!(t.kind, TokenKind::Newline | TokenKind::Eof))
+        .collect();
+    if line.is_empty() {
+        return None;
+    }
+    let mut diags = Vec::new();
+    parse_instr::parse_instruction(&line, function, &mut diags)
+}
+
 pub fn parse_source(src: &str, file: &str) -> Result<Program, Vec<Diagnostic>> {
     parse_source_with_target(src, file, "native")
 }

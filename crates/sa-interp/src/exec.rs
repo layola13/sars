@@ -5,7 +5,7 @@ use sa_ir::{
     Address, AtomicRmwOp, CapPrefix, ConstValue, Function, Instruction, InstructionKind, Operand,
     OpKind, PrimType, Program, Trap,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const MAX_DEPTH: usize = 256;
 
@@ -16,6 +16,7 @@ struct Frame<'a> {
     instr: usize,
     va: Vec<Value>,
     va_pos: usize,
+    fallible: HashSet<String>,
 }
 
 impl<'a> Frame<'a> {
@@ -27,6 +28,7 @@ impl<'a> Frame<'a> {
             instr: 0,
             va: Vec::new(),
             va_pos: 0,
+            fallible: HashSet::new(),
         }
     }
 }
@@ -254,6 +256,19 @@ impl<'a> Interpreter<'a> {
                     }
                     let value = self.call(target, vals)?;
                     set_dest(frame, ins, value);
+                    if let Some(dest) = ins.dest.as_deref() {
+                        let fallible = if let Some(function) = self.program.function(target) {
+                            function.sig.return_fallible
+                        } else {
+                            self.program
+                                .extern_sig(target)
+                                .map(|sig| sig.return_fallible)
+                                .unwrap_or(false)
+                        };
+                        if fallible {
+                            frame.fallible.insert(dest.to_string());
+                        }
+                    }
                 }
                 InstructionKind::CallIndirect { target, args } => {
                     let mut vals = Vec::with_capacity(args.len());
@@ -351,6 +366,12 @@ impl<'a> Interpreter<'a> {
                 | InstructionKind::Native { .. } => {}
                 InstructionKind::Try { src } => {
                     let value = self.resolve(frame, src)?;
+                    if let Operand::Reg(name) = src {
+                        if frame.fallible.remove(name) {
+                            set_dest(frame, ins, value);
+                            continue;
+                        }
+                    }
                     let is_error = matches!(value, Value::Ptr(0) | Value::Int(0))
                         || matches!(&value, Value::Bytes(b) if b.first().copied().unwrap_or(0) != 0);
                     if is_error {
