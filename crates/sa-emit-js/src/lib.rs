@@ -2,6 +2,7 @@ mod buf;
 mod emit;
 mod ident;
 mod lower;
+mod npm;
 mod runtime;
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,7 @@
 use crate::buf::Buf;
 use crate::ident::{const_name, js_float, js_func_name, js_int, js_string};
 use crate::lower::{build_ctx, emit_function, ByteConsts};
+use crate::npm;
 use crate::runtime;
 use crate::JsOptions;
 use sa_ir::{ConstValue, Diagnostic, PrimType, Program, Trap};
@@ -32,8 +33,10 @@ pub fn emit(program: &Program, opts: &JsOptions) -> Result<String, Vec<Diagnosti
             .or_else(|| program.externs.first().map(|e| e.name.clone())),
     };
 
+    let npm_infos = npm::collect(program);
     let mut bytes = ByteConsts::from_program(program);
     let mut buf = Buf::new();
+    npm::emit_imports(program, opts, &npm_infos, &mut buf);
     buf.raw(&runtime::prelude(opts.memory_pages));
 
     emit_consts(program, &bytes, &mut buf);
@@ -43,7 +46,14 @@ pub fn emit(program: &Program, opts: &JsOptions) -> Result<String, Vec<Diagnosti
         emit_function(f, &mut buf, &mut ctx)?;
     }
 
-    emit_footer(program, opts, &function_names, entry.as_deref(), &mut buf);
+    emit_footer(
+        program,
+        opts,
+        &function_names,
+        entry.as_deref(),
+        &npm_infos,
+        &mut buf,
+    );
     Ok(buf.s)
 }
 
@@ -109,6 +119,7 @@ fn emit_footer(
     opts: &JsOptions,
     function_names: &HashMap<String, String>,
     entry: Option<&str>,
+    npm_infos: &HashMap<String, npm::NpmInfo>,
     buf: &mut Buf,
 ) {
     let exports: Vec<Export> = program
@@ -130,8 +141,16 @@ fn emit_footer(
     }
 
     buf.push_indent(0, "SA_EXTERNS[\"sa_print_bytes\"] = sa_print_bytes;");
+    buf.push_indent(0, "SA_EXTERNS[\"sa_js_value_release\"] = sa_js_value_release;");
     for sig in &program.externs {
-        if function_names.contains_key(&sig.name) || sig.name == "sa_print_bytes" {
+        if function_names.contains_key(&sig.name)
+            || sig.name == "sa_print_bytes"
+            || sig.name == "sa_js_value_release"
+        {
+            continue;
+        }
+        if let Some(info) = npm_infos.get(&sig.name) {
+            npm::emit_wrapper(sig, info, buf);
             continue;
         }
         buf.push_indent(

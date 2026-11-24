@@ -176,7 +176,7 @@ fn consume(ctx: &mut RuleCtx, state: &mut FnState, op: &Operand, loc: &SourceLoc
     }
 }
 
-fn is_scalar_operand(ctx: &RuleCtx, state: &FnState, op: &Operand) -> bool {
+fn is_scalar_operand(_ctx: &RuleCtx, state: &FnState, op: &Operand) -> bool {
     match op {
         Operand::Reg(name) => matches!(
             state.state_of(name),

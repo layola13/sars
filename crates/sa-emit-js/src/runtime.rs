@@ -20,11 +20,13 @@ let SA_VARARGS = [];
 const MEM: &str = r##"function sa_num(x) {
   if (typeof x === 'bigint') return Number(x);
   if (typeof x === 'number') return x;
+  if (typeof x === 'boolean') return x ? 1 : 0;
   return 0;
 }
 function sa_big(x) {
   if (typeof x === 'bigint') return x;
   if (typeof x === 'number') return BigInt(Math.trunc(x));
+  if (typeof x === 'boolean') return BigInt(x ? 1 : 0);
   return 0n;
 }
 function sa_ubig(x) {
@@ -426,8 +428,32 @@ const CALL: &str = r##"function call(target, args) {
 }
 "##;
 
+const NPM: &str = r##"const SA_HANDLES = [null];
+function sa_handle_new(value) {
+  SA_HANDLES.push(value);
+  return SA_HANDLES.length - 1;
+}
+function sa_handle_get(handle) {
+  const h = sa_num(handle) | 0;
+  return SA_HANDLES[h] || null;
+}
+function sa_js_value_release(handle) {
+  const h = sa_num(handle) | 0;
+  if (h > 0 && h < SA_HANDLES.length) SA_HANDLES[h] = null;
+  return 0;
+}
+function sa_utf8(ptr, len) {
+  const p = sa_num(ptr), n = sa_num(len);
+  return new TextDecoder().decode(U8.subarray(p, p + n));
+}
+function sa_bytes_view(ptr, len) {
+  const p = sa_num(ptr), n = sa_num(len);
+  return U8.subarray(p, p + n);
+}
+"##;
+
 pub fn prelude(pages: u32) -> String {
-    let mut out = String::with_capacity(DECLS.len() + MEM.len() + OPS.len() + CVT.len() + ATOMIC.len() + CALL.len() + 32);
+    let mut out = String::with_capacity(DECLS.len() + MEM.len() + OPS.len() + CVT.len() + ATOMIC.len() + CALL.len() + NPM.len() + 32);
     out.push_str(&format!("const SA_PAGES = {};\n", pages));
     out.push_str(DECLS);
     out.push_str(MEM);
@@ -435,5 +461,6 @@ pub fn prelude(pages: u32) -> String {
     out.push_str(CVT);
     out.push_str(ATOMIC);
     out.push_str(CALL);
+    out.push_str(NPM);
     out
 }

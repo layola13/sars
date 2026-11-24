@@ -1,7 +1,7 @@
 use super::*;
 use sa_ir::{
     Address, Block, ConstDecl, ConstValue, Function, ImportDecl, Instruction, InstructionKind,
-    OpKind, Operand, Program, Signature, SourceLoc, Trap,
+    OpKind, Operand, PrimType, Program, Signature, SourceLoc, Trap,
 };
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -453,6 +453,29 @@ fn source_files_within_line_limit() {
     assert!(lines(include_str!("runtime.rs")) <= 1000);
     assert!(lines(include_str!("lower.rs")) <= 1000);
     assert!(lines(include_str!("emit.rs")) <= 1000);
+}
+
+#[test]
+fn npm_bind_emits_import_and_wrapper() {
+    let mut p = program(vec![function("main", vec![block(
+        "entry",
+        vec![ins(InstructionKind::Return { value: None })],
+    )])]);
+    let mut sig = sa_ir::Signature::new("npm_totalmem");
+    sig.kind = sa_ir::FunctionKind::External;
+    sig.return_ty = PrimType::U64;
+    p.externs.push(sig);
+    p.npm_binds.push(sa_ir::NpmBindDecl {
+        extern_name: "npm_totalmem".into(),
+        spec: "node:os".into(),
+        target: "totalmem".into(),
+        shape: sa_ir::NpmBindShape::Call,
+        loc: SourceLoc::unknown(),
+    });
+    let js = super::emit_js(&p, &super::JsOptions::default()).unwrap();
+    assert!(js.contains("import { totalmem as __sa_npm_0 } from \"node:os\";"));
+    assert!(js.contains("SA_EXTERNS[\"npm_totalmem\"] = function () {"));
+    assert!(js.contains("return __sa_npm_0();"));
 }
 
 #[test]

@@ -29,14 +29,22 @@ cargo build --release
 
 ## Current status
 
-- `cargo test --workspace`: all unit tests green.
-- 120/120 sampled `sci/demos/rosetta/*/main.sa` files pass `sa check`;
-  the full 968-file corpus reaches 932 passes with no regressions.
-  `[MACRO]` / `EXPAND` bodies, multi-destination `cmpxchg`, vtable constants
-  and import-relative resolution are implemented.
+- `cargo test --workspace`: all unit tests green (Rust stable toolchain
+  installed via rustup; use `export PATH=$HOME/.cargo/bin:$PATH`).
+- 967/970 `sci/demos/rosetta/*/main.sa` files pass `sa check`; the remaining
+  three (243, 257, 335) also fail upstream `sci`'s own `sa check`.
+  `[MACRO]` / `EXPAND` bodies, multi-destination `cmpxchg`, vtable and
+  `struct`/`hex` constants, `#npm_bind` directives, `@target` source regions,
+  two-target `br_null`, address-based `take`, and import-relative resolution
+  are implemented. The verifier models ephemeral scalars, mutable-borrow
+  views and stack allocations per the Referee.
 - hello-world, array-sum and fallible-float-loop pass end-to-end under `run`
   and `build-js` (verified with Node); `build-wasm` output validates with
   `WebAssembly.Module`.
 - Known gaps: interpreter/JS semantics for a few macro-heavy programs
-  (e.g. `104_if_let_chains` takes its error branch) and some
-  vtable/struct-heavy demos; native/LLVM and C backends are not ported.
+  (e.g. `104_if_let_chains` takes its error branch, `81_kv_store` hits an
+  out-of-bounds read under `run`); the interpreter models fallible values as
+  plain values, so `?` on a null pointer propagates early (demo 372 runs its
+  error branch); `#npm_bind` is parsed/validated but JS emitters still use
+  zero stubs instead of npm wrappers; native/LLVM and C backends are not
+  ported.
