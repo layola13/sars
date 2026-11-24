@@ -90,14 +90,18 @@ fn flatten_rec(
             continue;
         }
         ctx.visited.insert(key);
-        let parsed = match sa_parser::parse_source(&content, &import.path) {
+        let nested_from = ctx
+            .resolver
+            .resolve_path(&import.path, from)
+            .unwrap_or_else(|| import.path.clone());
+        let parsed = match sa_parser::parse_source(&content, &nested_from) {
             Ok(parsed) => parsed,
             Err(mut parse_diags) => {
                 diags.append(&mut parse_diags);
                 continue;
             }
         };
-        let nested = flatten_rec(&parsed, &import.path, depth + 1, ctx, diags);
+        let nested = flatten_rec(&parsed, &nested_from, depth + 1, ctx, diags);
         imports::merge(&mut merged, nested, &import.path);
     }
 

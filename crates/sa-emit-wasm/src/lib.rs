@@ -8,8 +8,8 @@ pub use crate::leb::{sleb128, uleb128};
 use crate::leb::{put_bytes, put_uleb};
 use crate::opcode::{storage_type, VALTYPE_I64};
 use crate::sections::{
-    code_section, export_entry, export_section, functype, function_section, import_entry,
-    import_section, locals_vec, memory_section, name_section, type_section,
+    code_section, data_section, export_entry, export_section, functype, function_section,
+    import_entry, import_section, locals_vec, memory_section, name_section, type_section,
 };
 use sa_ir::{Diagnostic, FunctionKind, PrimType, Program, Signature, SourceLoc, Trap};
 use std::collections::HashMap;
@@ -31,6 +31,31 @@ impl Default for WasmOptions {
             debug_names: true,
         }
     }
+}
+
+pub(crate) struct ConstSegment {
+    pub name: String,
+    pub addr: u32,
+    pub data: Vec<u8>,
+}
+
+pub(crate) fn const_layout(program: &Program) -> Vec<ConstSegment> {
+    let mut cursor = 1024u32;
+    let mut out = Vec::new();
+    for constant in &program.consts {
+        let data = match constant.value.bytes() {
+            Some(data) if !data.is_empty() => data,
+            _ => continue,
+        };
+        cursor = (cursor + 7) & !7;
+        out.push(ConstSegment {
+            name: constant.name.clone(),
+            addr: cursor,
+            data: data.clone(),
+        });
+        cursor = cursor.saturating_add(data.len() as u32 + 1);
+    }
+    out
 }
 
 fn signature_type(sig: &Signature, diags: &mut Vec<Diagnostic>) -> Vec<u8> {
@@ -73,6 +98,7 @@ fn intern_type(types: &mut Vec<Vec<u8>>, encoded: Vec<u8>) -> u32 {
 
 pub fn emit_wasm(program: &Program, opts: &WasmOptions) -> Result<Vec<u8>, Vec<Diagnostic>> {
     let mut diags = Vec::new();
+    let consts = const_layout(program);
     let mut types: Vec<Vec<u8>> = Vec::new();
     let mut extern_types = Vec::new();
     for ext in &program.externs {
@@ -163,6 +189,13 @@ pub fn emit_wasm(program: &Program, opts: &WasmOptions) -> Result<Vec<u8>, Vec<D
     out.extend_from_slice(&memory_section(opts.memory_pages));
     out.extend_from_slice(&export_section(&exports));
     out.extend_from_slice(&code_section(&bodies));
+    if !consts.is_empty() {
+        let segments: Vec<(u32, Vec<u8>)> = consts
+            .iter()
+            .map(|c| (c.addr, c.data.clone()))
+            .collect();
+        out.extend_from_slice(&data_section(&segments));
+    }
     if opts.debug_names {
         out.extend_from_slice(&name_section(&name_entries));
     }

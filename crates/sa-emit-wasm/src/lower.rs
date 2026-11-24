@@ -12,13 +12,14 @@ struct Registers {
     map: HashMap<String, u32>,
     types: Vec<u8>,
     scratch: [u32; 2],
+    consts: HashMap<String, u32>,
 }
 
 fn diag(trap: Trap, message: &str, loc: &SourceLoc, function: &str) -> Diagnostic {
     Diagnostic::new(trap, message, loc.clone()).in_function(function)
 }
 
-fn collect_registers(func: &Function, diags: &mut Vec<Diagnostic>) -> Registers {
+fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnostic>) -> Registers {
     let mut map = HashMap::new();
     let mut types = Vec::new();
     for p in &func.sig.params {
@@ -70,7 +71,11 @@ fn collect_registers(func: &Function, diags: &mut Vec<Diagnostic>) -> Registers 
             types.len() as u32 - 1
         },
     ];
-    Registers { map, types, scratch }
+    let consts = crate::const_layout(program)
+        .into_iter()
+        .map(|segment| (segment.name, segment.addr))
+        .collect();
+    Registers { map, types, scratch, consts }
 }
 
 fn local_get(out: &mut Vec<u8>, index: u32) {
@@ -132,6 +137,8 @@ fn convert(out: &mut Vec<u8>, from: u8, to: u8) {
         return;
     }
     match (from, to) {
+        (VALTYPE_I32, VALTYPE_I64) => put_u8(out, I64_EXTEND_I32_S),
+        (VALTYPE_I64, VALTYPE_I32) => put_u8(out, I32_WRAP_I64),
         (VALTYPE_I64, VALTYPE_F64) => put_u8(out, F64_CONVERT_I64_S),
         (VALTYPE_F64, VALTYPE_I64) => put_u8(out, I64_TRUNC_F64_S),
         _ => {}
@@ -152,6 +159,9 @@ fn emit_operand(
             if let Some(&index) = regs.map.get(name) {
                 local_get(out, index);
                 convert(out, regs.types[index as usize], storage);
+            } else if let Some(&addr) = regs.consts.get(name) {
+                i32_const(out, addr as i32);
+                convert(out, crate::opcode::VALTYPE_I32, storage);
             } else {
                 emit_int_const(out, 0, storage);
                 diags.push(diag(
@@ -710,7 +720,7 @@ pub fn lower_function(
     heap_start: i64,
     diags: &mut Vec<Diagnostic>,
 ) -> FunctionCode {
-    let regs = collect_registers(func, diags);
+    let regs = collect_registers(func, program, diags);
     let mut locals = Vec::new();
     for (index, ty) in regs.types.iter().enumerate() {
         if index < func.sig.params.len() {

@@ -2,6 +2,10 @@ use std::path::{Path, PathBuf};
 
 pub trait ImportResolver {
     fn resolve(&self, path: &str, from: &str) -> Option<String>;
+    fn resolve_path(&self, path: &str, from: &str) -> Option<String> {
+        let _ = (path, from);
+        None
+    }
 }
 
 pub struct FsResolver {
@@ -19,24 +23,33 @@ impl FsResolver {
         }
         std::fs::read_to_string(path).ok()
     }
-}
 
-impl ImportResolver for FsResolver {
-    fn resolve(&self, path: &str, from: &str) -> Option<String> {
+    fn find_path(&self, path: &str, from: &str) -> Option<PathBuf> {
         let local = match Path::new(from).parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent.join(path),
             _ => PathBuf::from(path),
         };
-        if let Some(text) = Self::read_file(&local) {
-            return Some(text);
+        if local.is_file() {
+            return Some(local);
         }
         for root in &self.roots {
             let candidate = root.join(path);
-            if let Some(text) = Self::read_file(&candidate) {
-                return Some(text);
+            if candidate.is_file() {
+                return Some(candidate);
             }
         }
         None
+    }
+}
+
+impl ImportResolver for FsResolver {
+    fn resolve(&self, path: &str, from: &str) -> Option<String> {
+        self.find_path(path, from).and_then(|p| Self::read_file(&p))
+    }
+
+    fn resolve_path(&self, path: &str, from: &str) -> Option<String> {
+        self.find_path(path, from)
+            .map(|p| p.to_string_lossy().to_string())
     }
 }
 

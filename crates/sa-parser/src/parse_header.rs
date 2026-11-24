@@ -204,8 +204,8 @@ fn const_value(tokens: &[Token]) -> Option<ConstValue> {
         return None;
     }
     if tokens[0].is_ident("vtable")
-        && tokens.get(1).map(|t| t.kind) == Some(TokenKind::Other('{'))
-        && tokens.last().map(|t| t.kind) == Some(TokenKind::Other('}'))
+        && tokens.get(1).map(|t| t.kind) == Some(TokenKind::LBrace)
+        && tokens.last().map(|t| t.kind) == Some(TokenKind::RBrace)
     {
         let mut entries = Vec::new();
         for part in split_commas(&tokens[2..tokens.len() - 1]) {

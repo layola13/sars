@@ -29,6 +29,10 @@ pub(crate) fn check(program: &Program, diags: &mut Vec<Diagnostic>) {
     }
 }
 
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
 fn find_forbidden(raw: &str) -> Option<&'static str> {
     let chars: Vec<char> = raw.chars().collect();
     let mut in_string = false;
@@ -61,7 +65,27 @@ fn find_forbidden(raw: &str) -> Option<&'static str> {
                     break;
                 }
             }
-            if matches {
+            if !matches {
+                continue;
+            }
+            let starts_word = pattern
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphabetic())
+                .unwrap_or(false);
+            let ends_word = pattern
+                .chars()
+                .last()
+                .map(|c| c.is_ascii_alphanumeric())
+                .unwrap_or(false);
+            let prev_ok = !starts_word
+                || i == 0
+                || !is_word_char(chars[i - 1]);
+            let next_pos = i + width;
+            let next_ok = !ends_word
+                || next_pos >= chars.len()
+                || !is_word_char(chars[next_pos]);
+            if prev_ok && next_ok {
                 return Some(pattern);
             }
         }

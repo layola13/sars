@@ -26,3 +26,13 @@ cargo build --release
 ./target/release/sa run    ../sci/demos/rosetta/13_array_sum/main.sa
 ./target/release/sa build-js ../sci/demos/rosetta/01_hello_world/main.sa -o hello.mjs
 ```
+
+## Current status
+
+- `cargo test --workspace`: all unit tests green.
+- 97/120 sampled `sci/demos/rosetta/*/main.sa` files pass `sa check`;
+  hello-world and array-sum pass end-to-end under `run`, `build-js` (verified
+  with Node) and `build-wasm` (verified with `WebAssembly.Module`).
+- Known gaps: `EXPAND` macro bodies from `.sal` files are not yet inlined,
+  a handful of demos use multi-destination `cmpxchg`, and the interpreter
+  is still incomplete for vtable/struct-heavy programs.

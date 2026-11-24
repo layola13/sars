@@ -287,7 +287,10 @@ impl Operand {
     }
 
     pub fn parse(text: &str) -> Self {
-        let t = text.trim();
+        let mut t = text.trim();
+        while let Some(rest) = t.strip_prefix('&').or_else(|| t.strip_prefix('^')).or_else(|| t.strip_prefix('*')) {
+            t = rest.trim();
+        }
         if let Some(rest) = t.strip_prefix("utf8:\"") {
             let body = rest.strip_suffix('"').unwrap_or(rest);
             return Self::Utf8(unescape(body));

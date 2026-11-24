@@ -527,6 +527,13 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
         InstructionKind::Borrow { src, mutable } | InstructionKind::AssumeBorrow { src, mutable } => {
             if let Some(dest) = ins.dest.as_deref() {
                 check_redefine(ctx, state, dest, loc);
+                state.set(
+                    dest,
+                    RegState::Borrowed {
+                        shared: 0,
+                        mutable: false,
+                    },
+                );
             }
             add_borrow(ctx, state, src, *mutable, ins.dest.as_deref(), loc);
         }

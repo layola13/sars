@@ -10,6 +10,7 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, Vec<Diagnostic>> {
         current_fn: None,
         current_block: None,
         labels: Vec::new(),
+        in_macro: false,
     };
     let mut start = 0usize;
     for i in 0..=tokens.len() {
@@ -48,10 +49,23 @@ struct Parser {
     current_fn: Option<usize>,
     current_block: Option<usize>,
     labels: Vec<String>,
+    in_macro: bool,
 }
 
 impl Parser {
     fn parse_line(&mut self, line: &[Token]) {
+        let head: String = line.iter().map(|t| t.text.as_str()).collect();
+        if head.starts_with("[MACRO]") {
+            self.leave_function();
+            self.in_macro = true;
+            return;
+        }
+        if self.in_macro {
+            if head.starts_with("[END_MACRO]") {
+                self.in_macro = false;
+            }
+            return;
+        }
         match line[0].kind {
             TokenKind::Directive => self.parse_directive(line),
             TokenKind::HashDirective => {

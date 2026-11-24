@@ -1,4 +1,4 @@
-use crate::leb::{put_bytes, put_uleb, section};
+use crate::leb::{put_bytes, put_sleb, put_uleb, section};
 
 pub fn functype(params: &[u8], results: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -87,6 +87,19 @@ pub fn code_section(bodies: &[Vec<u8>]) -> Vec<u8> {
         payload.extend_from_slice(body);
     }
     section(10, &payload)
+}
+
+pub fn data_section(segments: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    put_uleb(&mut payload, segments.len() as u64);
+    for (offset, bytes) in segments {
+        put_uleb(&mut payload, 0);
+        payload.push(0x41);
+        put_sleb(&mut payload, *offset as i32 as i64);
+        payload.push(0x0b);
+        put_bytes(&mut payload, bytes);
+    }
+    section(11, &payload)
 }
 
 pub fn name_section(entries: &[(u32, String)]) -> Vec<u8> {
