@@ -511,11 +511,44 @@ fn op_expr(op: OpKind, args: &[Operand], ty: Option<PrimType>, ctx: &mut FuncCtx
         OpKind::Ule => binary("sa_ule", &a, &b),
         OpKind::Ugt => binary("sa_ugt", &a, &b),
         OpKind::Uge => binary("sa_uge", &a, &b),
-        OpKind::Div => binary("sa_div", &a, &b),
-        OpKind::Rem => binary("sa_rem", &a, &b),
+        OpKind::Div => {
+            let effective = ty.or_else(|| match arg(args, 0) {
+                Operand::Reg(name) => ctx.types.get(name).copied(),
+                _ => None,
+            });
+            let unsigned = effective.map(|t| !t.is_signed() && !t.is_float()).unwrap_or(false);
+            let float = effective.map(|t| t.is_float()).unwrap_or(false);
+            match (float, unsigned) {
+                (true, _) => binary("sa_fdiv", &a, &b),
+                (false, true) => binary("sa_udiv", &a, &b),
+                (false, false) => binary("sa_div", &a, &b),
+            }
+        }
+        OpKind::Rem => {
+            let effective = ty.or_else(|| match arg(args, 0) {
+                Operand::Reg(name) => ctx.types.get(name).copied(),
+                _ => None,
+            });
+            let unsigned = effective.map(|t| !t.is_signed() && !t.is_float()).unwrap_or(false);
+            if unsigned {
+                binary("sa_urem", &a, &b)
+            } else {
+                binary("sa_rem", &a, &b)
+            }
+        }
         OpKind::Gt => binary("sa_gt", &a, &b),
         OpKind::Lt => binary("sa_lt", &a, &b),
-        OpKind::Shr => binary("sa_shr", &a, &b),
+        OpKind::Shr => {
+            let effective = ty.or_else(|| match arg(args, 0) {
+                Operand::Reg(name) => ctx.types.get(name).copied(),
+                _ => None,
+            });
+            if effective.map(|t| !t.is_signed()).unwrap_or(false) {
+                binary("sa_lshr", &a, &b)
+            } else {
+                binary("sa_shr", &a, &b)
+            }
+        }
         OpKind::FAdd => binary("sa_fadd", &a, &b),
         OpKind::FSub => binary("sa_fsub", &a, &b),
         OpKind::FMul => binary("sa_fmul", &a, &b),
