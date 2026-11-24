@@ -420,6 +420,7 @@ const CALL: &str = r##"function call(target, args) {
   const a = args || [];
   let f = null;
   if (typeof target === 'function') f = target;
+  else if (typeof target === 'bigint' && target >= SA_FN_BASE) f = SA_FUNCS[sa_fnval(target)];
   else if (typeof target === 'number' || typeof target === 'bigint') f = SA_FUNCS[Number(target) | 0];
   else f = SA_FUNCS_BY_NAME[target] || SA_EXTERNS[target];
   if (!f) sa_panic(2002, "unknown function: " + String(target));
@@ -428,7 +429,38 @@ const CALL: &str = r##"function call(target, args) {
 }
 "##;
 
-const NPM: &str = r##"const SA_HANDLES = [null];
+const NPM: &str = r##"const SA_FN_BASE = 0x5341000000000000n;
+function sa_fnptr(index) { return SA_FN_BASE + BigInt(index); }
+function sa_fnval(value) {
+  const index = BigInt(value) - SA_FN_BASE;
+  return (index >= 0n && index < BigInt(SA_FUNCS.length)) ? Number(index) : -1;
+}
+const SA_CB_QUEUE = [];
+function sa_js_make_callback(fn) {
+  const index = sa_fnval(fn);
+  if (index < 0) sa_panic(2002, "sa_js_make_callback: not an SA function pointer");
+  const closure = (...args) => {
+    const numbers = [];
+    for (const value of args) {
+      if (typeof value === 'number') numbers.push(value);
+      else if (typeof value === 'bigint') numbers.push(Number(value));
+      else if (typeof value === 'boolean') numbers.push(value ? 1 : 0);
+      else sa_panic(2002, "js callback: non-numeric argument");
+    }
+    SA_CB_QUEUE.push({ fn: index, args: numbers });
+  };
+  return sa_handle_new(closure);
+}
+function sa_js_callback_poll(fn_out, argc_out, args_out) {
+  const event = SA_CB_QUEUE.shift();
+  if (!event) return 0n;
+  DV.setBigUint64(sa_num(fn_out), sa_fnptr(event.fn), true);
+  DV.setBigUint64(sa_num(argc_out), BigInt(event.args.length), true);
+  const base = sa_num(args_out);
+  for (let i = 0; i < event.args.length; i++) DV.setFloat64(base + i * 8, event.args[i], true);
+  return 1n;
+}
+const SA_HANDLES = [null];
 function sa_handle_new(value) {
   SA_HANDLES.push(value);
   return SA_HANDLES.length - 1;

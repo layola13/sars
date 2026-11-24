@@ -73,6 +73,23 @@ fn emit_consts(program: &Program, bytes: &ByteConsts, buf: &mut Buf) {
             ConstValue::Float(f) => buf.push_indent(0, &format!("const {name} = {};", js_float(*f))),
             ConstValue::Bool(b) => buf.push_indent(0, &format!("const {name} = {};", *b as u8)),
             ConstValue::Null | ConstValue::Undef => buf.push_indent(0, &format!("const {name} = 0;")),
+            ConstValue::VTable(entries) => {
+                let mut data = Vec::new();
+                for entry in entries {
+                    let text = match entry {
+                        ConstValue::Utf8(text) => text.clone(),
+                        other => other.to_string(),
+                    };
+                    let target = text.split_once(':').map(|(_, t)| t).unwrap_or(&text);
+                    let index = program
+                        .functions
+                        .iter()
+                        .position(|f| f.sig.name == target)
+                        .unwrap_or(0) as u64;
+                    data.extend_from_slice(&(0x5341_0000_0000_0000u64 + index).to_le_bytes());
+                }
+                emit_bytes_const(&name, &data, buf);
+            }
             other => {
                 if let Some(data) = const_bytes(other) {
                     emit_bytes_const(&name, &data, buf);
@@ -142,10 +159,14 @@ fn emit_footer(
 
     buf.push_indent(0, "SA_EXTERNS[\"sa_print_bytes\"] = sa_print_bytes;");
     buf.push_indent(0, "SA_EXTERNS[\"sa_js_value_release\"] = sa_js_value_release;");
+    buf.push_indent(0, "SA_EXTERNS[\"sa_js_make_callback\"] = sa_js_make_callback;");
+    buf.push_indent(0, "SA_EXTERNS[\"sa_js_callback_poll\"] = sa_js_callback_poll;");
     for sig in &program.externs {
         if function_names.contains_key(&sig.name)
             || sig.name == "sa_print_bytes"
             || sig.name == "sa_js_value_release"
+            || sig.name == "sa_js_make_callback"
+            || sig.name == "sa_js_callback_poll"
         {
             continue;
         }
