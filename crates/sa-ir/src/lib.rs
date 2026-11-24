@@ -6,7 +6,9 @@ pub mod types;
 
 pub use capability::{Capability, Gas};
 pub use instr::{Address, CallArg, Instruction, InstructionKind, OpKind, Operand};
-pub use program::{Block, DefDecl, Function, ImportDecl, LocDecl, Program, SourceLoc};
+pub use program::{
+    Block, DefDecl, Function, ImportDecl, LocDecl, NpmBindDecl, NpmBindShape, Program, SourceLoc,
+};
 pub use trap::{Diagnostic, Trap};
 pub use types::{
     AtomicOrdering, AtomicRmwOp, CapPrefix, ConstDecl, ConstValue, FunctionKind, ParamSpec,

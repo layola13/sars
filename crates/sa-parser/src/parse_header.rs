@@ -1,7 +1,7 @@
 use crate::parser::{join, split_commas, string_value, take_type_suffix};
 use sa_ir::{
-    CapPrefix, ConstDecl, ConstValue, DefDecl, FunctionKind, ImportDecl, LocDecl, ParamSpec,
-    PrimType, Signature,
+    CapPrefix, ConstDecl, ConstValue, DefDecl, FunctionKind, ImportDecl, LocDecl, NpmBindDecl,
+    NpmBindShape, ParamSpec, PrimType, Signature,
 };
 use sa_lexer::{Token, TokenKind};
 
@@ -11,6 +11,51 @@ pub(crate) fn parse_import(line: &[Token]) -> Option<ImportDecl> {
         return None;
     }
     Some(ImportDecl::new(string_value(&path.text), path.loc.clone()))
+}
+
+pub(crate) fn parse_npm_bind(line: &[Token]) -> Option<NpmBindDecl> {
+    let name = line.get(1)?;
+    if name.kind != TokenKind::Ident {
+        return None;
+    }
+    let raw = line.get(2)?;
+    if raw.kind != TokenKind::Str {
+        return None;
+    }
+    let binding = string_value(&raw.text);
+    let hash = binding.find('#')?;
+    let spec = binding[..hash].to_string();
+    if spec.is_empty() {
+        return None;
+    }
+    let rest = &binding[hash + 1..];
+    let (target, keywords) = match rest.split_once(':') {
+        Some((target, keywords)) => (target, keywords),
+        None => (rest, ""),
+    };
+    if target.is_empty() {
+        return None;
+    }
+    let mut shape = NpmBindShape::Call;
+    for keyword in keywords.split(':').filter(|kw| !kw.is_empty()) {
+        match keyword {
+            "ctor" => shape = NpmBindShape::Ctor,
+            "method" => shape = NpmBindShape::Method,
+            "get" => shape = NpmBindShape::Get,
+            "bytes" | "f32view" => {}
+            _ => return None,
+        }
+    }
+    if matches!(shape, NpmBindShape::Method | NpmBindShape::Get) && spec != "@handle" {
+        return None;
+    }
+    Some(NpmBindDecl {
+        extern_name: name.text.clone(),
+        spec,
+        target: target.to_string(),
+        shape,
+        loc: line[0].loc.clone(),
+    })
 }
 
 pub(crate) fn parse_def(line: &[Token]) -> Option<DefDecl> {

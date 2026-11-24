@@ -188,6 +188,18 @@ pub fn verify(program: &Program, opts: &VerifyOptions) -> Result<VerifyReport, V
         check_gas(gas, first, opts, &mut sink);
     }
     let mut report = VerifyReport { gas_used: gas, ..VerifyReport::default() };
+    for bind in &program.npm_binds {
+        if !program.has_extern(&bind.extern_name) {
+            sink.push_error(
+                Diagnostic::new(
+                    Trap::UnknownRegister,
+                    format!("#npm_bind target '@{}' is not declared as @extern", bind.extern_name),
+                    bind.loc.clone(),
+                )
+                .with_hint("declare the extern before binding it with #npm_bind"),
+            );
+        }
+    }
     for function in &program.functions {
         check_function(function, program, opts, &mut sink);
         report.functions_checked += 1;

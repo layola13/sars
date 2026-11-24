@@ -88,6 +88,13 @@ impl Parser {
                             self.diags.push(err(line, "invalid #loc declaration"));
                         }
                     }
+                    "#npm_bind" => {
+                        if let Some(b) = parse_header::parse_npm_bind(line) {
+                            self.program.npm_binds.push(b);
+                        } else {
+                            self.diags.push(err(line, "invalid #npm_bind declaration"));
+                        }
+                    }
                     other => self.diags.push(err(line, &format!("unknown hash directive {other}"))),
                 }
             }

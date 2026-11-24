@@ -70,6 +70,24 @@ pub struct LocDecl {
     pub loc: SourceLoc,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NpmBindShape {
+    #[default]
+    Call,
+    Ctor,
+    Method,
+    Get,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NpmBindDecl {
+    pub extern_name: String,
+    pub spec: String,
+    pub target: String,
+    pub shape: NpmBindShape,
+    pub loc: SourceLoc,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub label: String,
@@ -155,6 +173,7 @@ pub struct Program {
     pub externs: Vec<Signature>,
     pub functions: Vec<Function>,
     pub locs: Vec<LocDecl>,
+    pub npm_binds: Vec<NpmBindDecl>,
 }
 
 impl Program {

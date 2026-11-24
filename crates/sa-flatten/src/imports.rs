@@ -17,6 +17,11 @@ pub(crate) fn merge(dst: &mut Program, src: Program, path: &str) {
         }
     }
     dst.locs.extend(src.locs);
+    for bind in src.npm_binds {
+        if !dst.npm_binds.iter().any(|existing| existing.extern_name == bind.extern_name) {
+            dst.npm_binds.push(bind);
+        }
+    }
 
     let mut names: HashSet<String> = dst
         .functions
