@@ -209,8 +209,16 @@ pub fn emit_function(
         let mut terminated = false;
         for ins in &block.instrs {
             ctx.wide = matches!(ins.ty, Some(PrimType::I64 | PrimType::U64));
-            if let (Some(dest), Some(ty)) = (ins.dest.as_deref(), ins.ty) {
-                ctx.types.insert(dest.to_string(), ty);
+            if let Some(dest) = ins.dest.as_deref() {
+                let inferred = ins.ty.or_else(|| {
+                    ins.reads().iter().find_map(|op| match op {
+                        Operand::Reg(name) => ctx.types.get(name).copied(),
+                        _ => None,
+                    })
+                });
+                if let Some(ty) = inferred {
+                    ctx.types.insert(dest.to_string(), ty);
+                }
             }
             terminated = lower_instr(ins, ctx, buf, 4, i, f.blocks.len())?;
         }
@@ -475,6 +483,17 @@ fn call_args(args: &[sa_ir::CallArg], ctx: &mut FuncCtx<'_>) -> Result<String, V
     Ok(format!("[{}]", out.join(", ")))
 }
 
+fn unsigned_op(ty: Option<PrimType>, args: &[Operand], ctx: &FuncCtx<'_>) -> bool {
+    ty.map(|t| !t.is_signed() && !t.is_float()).unwrap_or_else(|| match arg(args, 0) {
+        Operand::Reg(name) => ctx
+            .types
+            .get(name)
+            .map(|t| !t.is_signed() && !t.is_float())
+            .unwrap_or(false),
+        _ => false,
+    })
+}
+
 fn arg(args: &[Operand], i: usize) -> &Operand {
     args.get(i).unwrap_or(&ZERO)
 }
@@ -494,13 +513,13 @@ fn op_expr(op: OpKind, args: &[Operand], ty: Option<PrimType>, ctx: &mut FuncCtx
         OpKind::SRem => binary("sa_srem", &a, &b),
         OpKind::URem => binary("sa_urem", &a, &b),
         OpKind::Neg => unary("sa_neg", &a),
-        OpKind::And => binary("sa_band", &a, &b),
-        OpKind::Or => binary("sa_bor", &a, &b),
-        OpKind::Xor => binary("sa_bxor", &a, &b),
+        OpKind::And => binary(if unsigned_op(ty, args, ctx) { "sa_uband" } else { "sa_band" }, &a, &b),
+        OpKind::Or => binary(if unsigned_op(ty, args, ctx) { "sa_ubor" } else { "sa_bor" }, &a, &b),
+        OpKind::Xor => binary(if unsigned_op(ty, args, ctx) { "sa_ubxor" } else { "sa_bxor" }, &a, &b),
         OpKind::Shl => binary("sa_shl", &a, &b),
         OpKind::LShr => binary("sa_lshr", &a, &b),
         OpKind::AShr => binary("sa_ashr", &a, &b),
-        OpKind::Not => unary("sa_bnot", &a),
+        OpKind::Not => unary(if unsigned_op(ty, args, ctx) { "sa_ubnot" } else { "sa_bnot" }, &a),
         OpKind::Eq => binary("sa_eq", &a, &b),
         OpKind::Ne => binary("sa_ne", &a, &b),
         OpKind::Slt => binary("sa_slt", &a, &b),

@@ -205,8 +205,12 @@ function sa_bnot(a) {
   if (typeof a === 'bigint') return sa_wrap64(~a);
   return ~sa_num(a);
 }
+function sa_uband(a, b) { return sa_u64(sa_ubig(a) & sa_ubig(b)); }
+function sa_ubor(a, b) { return sa_u64(sa_ubig(a) | sa_ubig(b)); }
+function sa_ubxor(a, b) { return sa_u64(sa_ubig(a) ^ sa_ubig(b)); }
+function sa_ubnot(a) { return sa_u64(~sa_ubig(a)); }
 function sa_shl(a, b) {
-  if (sa_is64(a, b)) return sa_wrap64(sa_big(a) << (Number(sa_big(b) & 63n)));
+  if (sa_is64(a, b)) return sa_wrap64(sa_big(a) << BigInt(Number(sa_big(b) & 63n)));
   return (sa_num(a) << (sa_num(b) & 31)) | 0;
 }
 function sa_lshr(a, b) {
