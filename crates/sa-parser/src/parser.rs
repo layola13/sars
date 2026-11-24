@@ -37,10 +37,63 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, Vec<Diagnostic>> {
 }
 
 pub fn parse_source(src: &str, file: &str) -> Result<Program, Vec<Diagnostic>> {
+    parse_source_with_target(src, file, "native")
+}
+
+pub fn parse_source_with_target(
+    src: &str,
+    file: &str,
+    target: &str,
+) -> Result<Program, Vec<Diagnostic>> {
     match tokenize(src, file) {
-        Ok(tokens) => parse_program(&tokens),
+        Ok(tokens) => parse_program(&select_target_lines(&tokens, target)),
         Err(d) => Err(vec![d]),
     }
+}
+
+fn select_target_lines(tokens: &[Token], target: &str) -> Vec<Token> {
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut in_block = false;
+    let mut active = true;
+    let mut start = 0usize;
+    for i in 0..tokens.len() {
+        if tokens[i].kind != TokenKind::Newline {
+            continue;
+        }
+        let line = &tokens[start..=i];
+        start = i + 1;
+        let marker = line
+            .iter()
+            .find(|t| t.kind == TokenKind::Comment && t.text.contains("@target"));
+        if let Some(marker) = marker {
+            let text = marker.text.as_str();
+            if text.contains("@target-begin") {
+                in_block = true;
+                active = false;
+                continue;
+            }
+            if text.contains("@target-end") {
+                in_block = false;
+                active = true;
+                continue;
+            }
+            if in_block {
+                if let Some((_, name)) = text.split_once("@target") {
+                    active = name.trim() == target;
+                }
+                continue;
+            }
+        }
+        if !in_block || active {
+            out.extend_from_slice(line);
+        }
+    }
+    if start < tokens.len() {
+        if !in_block || active {
+            out.extend_from_slice(&tokens[start..]);
+        }
+    }
+    out
 }
 
 struct Parser {
@@ -409,6 +462,19 @@ mod tests {
     fn comments_and_blank_lines_skipped() {
         let p = first_program("// lead\n\n@f():\n// body\nL_ENTRY:\n  nop\n");
         assert_eq!(p.function("f").unwrap().all_instructions().len(), 1);
+    }
+
+    #[test]
+    fn target_variants_select_native_by_default() {
+        let src = "@f() -> i32:\nL_ENTRY:\n// @target-begin\n// @target native\n  a = add 1, 2\n// @target wasm32\n  a = add 3, 4\n// @target-end\n  return a\n";
+        let native = first_program(src);
+        let text = native.function("f").unwrap().to_text();
+        assert!(text.contains("add 1, 2"));
+        assert!(!text.contains("add 3, 4"));
+        let wasm = parse_source_with_target(src, "t.sa", "wasm32").unwrap();
+        let text = wasm.function("f").unwrap().to_text();
+        assert!(text.contains("add 3, 4"));
+        assert!(!text.contains("add 1, 2"));
     }
 
     #[test]

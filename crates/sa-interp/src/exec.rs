@@ -40,19 +40,34 @@ pub struct Interpreter<'a> {
     steps: u64,
     gas: u64,
     depth: usize,
+    const_ptrs: HashMap<String, u64>,
 }
 
 impl<'a> Interpreter<'a> {
     pub fn new(program: &'a Program, opts: InterpOptions) -> Self {
+        let mut memory = Memory::new(1024 * 1024);
+        let mut const_ptrs = HashMap::new();
+        for constant in &program.consts {
+            let data = const_data(&constant.value);
+            if data.is_empty() {
+                continue;
+            }
+            if let Ok(ptr) = memory.alloc(data.len(), 8) {
+                if memory.write(ptr, &data).is_ok() {
+                    const_ptrs.insert(constant.name.clone(), ptr);
+                }
+            }
+        }
         Self {
             program,
             opts,
-            memory: Memory::new(1024 * 1024),
+            memory,
             output: Vec::new(),
             trace: Vec::new(),
             steps: 0,
             gas: 0,
             depth: 0,
+            const_ptrs,
         }
     }
 
@@ -396,8 +411,8 @@ impl<'a> Interpreter<'a> {
                 if let Some(value) = frame.regs.get(name) {
                     return Ok(value.clone());
                 }
-                if let Some(c) = self.program.find_const(name) {
-                    return Ok(const_value(&c.value));
+                if let Some(value) = self.resolve_const(name) {
+                    return Ok(value);
                 }
                 if let Some(d) = self.program.find_def(name) {
                     return Ok(Value::Bytes(d.as_bytes().to_vec()));
@@ -412,8 +427,8 @@ impl<'a> Interpreter<'a> {
             Operand::Bytes(b) => Ok(Value::Bytes(b.clone())),
             Operand::Utf8(s) => Ok(Value::Bytes(s.as_bytes().to_vec())),
             Operand::Symbol(name) => {
-                if let Some(c) = self.program.find_const(name) {
-                    Ok(const_value(&c.value))
+                if let Some(value) = self.resolve_const(name) {
+                    Ok(value)
                 } else if let Some(d) = self.program.find_def(name) {
                     Ok(Value::Bytes(d.as_bytes().to_vec()))
                 } else {
@@ -439,6 +454,14 @@ impl<'a> Interpreter<'a> {
             }
         }
         Ok(value)
+    }
+
+    fn resolve_const(&self, name: &str) -> Option<Value> {
+        let constant = self.program.find_const(name)?;
+        if let Some(&ptr) = self.const_ptrs.get(name) {
+            return Some(Value::Ptr(ptr));
+        }
+        Some(const_value(&constant.value))
     }
 
     fn resolve_addr(&self, frame: &Frame<'_>, addr: &Address) -> Result<u64, RuntimeError> {
@@ -503,6 +526,16 @@ fn rmw_op(op: AtomicRmwOp) -> OpKind {
         AtomicRmwOp::Umax => OpKind::Ugt,
         AtomicRmwOp::Smin => OpKind::Slt,
         AtomicRmwOp::Smax => OpKind::Sgt,
+    }
+}
+
+fn const_data(c: &ConstValue) -> Vec<u8> {
+    match const_value(c) {
+        Value::Bytes(b) => b,
+        Value::Int(i) => i.to_le_bytes().to_vec(),
+        Value::Float(f) => f.to_le_bytes().to_vec(),
+        Value::Ptr(p) => p.to_le_bytes().to_vec(),
+        _ => Vec::new(),
     }
 }
 

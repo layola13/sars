@@ -248,6 +248,51 @@ fn const_value(tokens: &[Token]) -> Option<ConstValue> {
     if tokens.is_empty() {
         return None;
     }
+    if tokens[0].is_ident("struct")
+        && tokens.get(1).map(|t| t.kind) == Some(TokenKind::LBrace)
+        && tokens.last().map(|t| t.kind) == Some(TokenKind::RBrace)
+    {
+        let mut fields = Vec::new();
+        for part in split_commas(&tokens[2..tokens.len() - 1]) {
+            let eq = part.iter().position(|t| t.kind == TokenKind::Equal)?;
+            let mut bytes = match const_value(&part[eq + 1..])? {
+                ConstValue::Bytes(b) => b,
+                ConstValue::Utf8(s) => s.into_bytes(),
+                ConstValue::Int(v) => v.to_le_bytes().to_vec(),
+                _ => return None,
+            };
+            if let Some(size_token) = part[..eq]
+                .iter()
+                .rev()
+                .find(|t| t.kind == TokenKind::Number)
+            {
+                if let Ok(size) = size_token.text.parse::<usize>() {
+                    bytes.resize(size, 0);
+                    bytes.truncate(size);
+                }
+            }
+            fields.push(ConstValue::Bytes(bytes));
+        }
+        return Some(ConstValue::Aggregate(fields));
+    }
+    if tokens[0].is_ident("hex") && tokens.get(1).map(|t| t.kind) == Some(TokenKind::Colon) {
+        let raw: String = tokens[2..].iter().map(|t| t.text.as_str()).collect();
+        let src = raw.as_bytes();
+        let mut bytes = Vec::new();
+        let mut i = 0usize;
+        while i < src.len() {
+            if src[i] == b'\\' && i + 3 < src.len() && src[i + 1] == b'x' {
+                if let Ok(byte) = u8::from_str_radix(&raw[i + 2..i + 4], 16) {
+                    bytes.push(byte);
+                    i += 4;
+                    continue;
+                }
+            }
+            bytes.push(src[i]);
+            i += 1;
+        }
+        return Some(ConstValue::Bytes(bytes));
+    }
     if tokens[0].is_ident("vtable")
         && tokens.get(1).map(|t| t.kind) == Some(TokenKind::LBrace)
         && tokens.last().map(|t| t.kind) == Some(TokenKind::RBrace)
