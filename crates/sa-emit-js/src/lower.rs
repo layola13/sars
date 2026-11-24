@@ -132,8 +132,8 @@ pub fn build_ctx<'a>(
         regs.insert(r.clone());
     }
     for ins in f.all_instructions() {
-        if let Some(d) = &ins.dest {
-            regs.insert(d.clone());
+        for d in ins.all_dests() {
+            regs.insert(d.to_string());
         }
         for op in ins.reads() {
             if let Operand::Reg(name) = op {
@@ -381,6 +381,10 @@ fn lower_instr(
             let e = ctx.expr(expected).map_err(map_err)?;
             let r = ctx.expr(replacement).map_err(map_err)?;
             buf.push_indent(indent, &format!("{d} = Atomics.compareExchange(I32, sa_atomic_index({a}), sa_num({e}), sa_num({r}));"));
+            for extra in &ins.extra_dests {
+                let name = FuncCtx::reg_name(extra);
+                buf.push_indent(indent, &format!("{name} = ({d} === sa_num({e}) ? 1 : 0);"));
+            }
         }
         InstructionKind::AtomicRmw { op, addr, value, .. } => {
             let a = ctx.expr(&addr.base).map_err(map_err)?;

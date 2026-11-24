@@ -6,8 +6,9 @@ mod walk;
 
 pub use resolver::{FsResolver, ImportResolver};
 
+use crate::macros::MacroDef;
 use sa_ir::{Diagnostic, Program, Trap};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct FlattenOptions {
@@ -30,6 +31,7 @@ struct Context<'a> {
     resolver: &'a dyn ImportResolver,
     opts: &'a FlattenOptions,
     visited: HashSet<String>,
+    macros: HashMap<String, MacroDef>,
 }
 
 fn source_file(program: &Program) -> String {
@@ -94,6 +96,12 @@ fn flatten_rec(
             .resolver
             .resolve_path(&import.path, from)
             .unwrap_or_else(|| import.path.clone());
+        macros::collect_macros(&content, &mut ctx.macros);
+        let content = if ctx.opts.expand_macros {
+            macros::expand_text(&content, &ctx.macros, 0, ctx.opts.max_depth, diags)
+        } else {
+            content
+        };
         let parsed = match sa_parser::parse_source(&content, &nested_from) {
             Ok(parsed) => parsed,
             Err(mut parse_diags) => {
@@ -120,6 +128,7 @@ pub fn flatten(
         resolver,
         opts,
         visited: HashSet::new(),
+        macros: HashMap::new(),
     };
     let mut diags = Vec::new();
     let from = source_file(program);
@@ -134,17 +143,100 @@ pub fn flatten(
     }
 }
 
+fn precollect_macros(
+    src: &str,
+    from: &str,
+    ctx: &mut Context,
+    depth: usize,
+    seen: &mut HashSet<String>,
+) {
+    macros::collect_macros(src, &mut ctx.macros);
+    if depth >= ctx.opts.max_depth {
+        return;
+    }
+    for path in import_paths(src) {
+        if seen.contains(&path) {
+            continue;
+        }
+        let content = match ctx.resolver.resolve(&path, from) {
+            Some(content) => content,
+            None => continue,
+        };
+        seen.insert(path.clone());
+        let nested_from = ctx
+            .resolver
+            .resolve_path(&path, from)
+            .unwrap_or_else(|| path.clone());
+        precollect_macros(&content, &nested_from, ctx, depth + 1, seen);
+    }
+}
+
+fn import_paths(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_macro = false;
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[MACRO]") {
+            in_macro = true;
+            continue;
+        }
+        if trimmed == "[END_MACRO]" {
+            in_macro = false;
+            continue;
+        }
+        if in_macro || !trimmed.starts_with("@import") {
+            continue;
+        }
+        let Some(start) = trimmed.find('"') else {
+            continue;
+        };
+        let Some(end) = trimmed[start + 1..].find('"') else {
+            continue;
+        };
+        out.push(trimmed[start + 1..start + 1 + end].to_string());
+    }
+    out
+}
+
 pub fn flatten_source(
     src: &str,
     file: &str,
     resolver: &dyn ImportResolver,
     opts: &FlattenOptions,
 ) -> Result<Program, Vec<Diagnostic>> {
-    let program = match sa_parser::parse_source(src, file) {
-        Ok(program) => program,
-        Err(diags) => return Err(diags),
+    let mut ctx = Context {
+        resolver,
+        opts,
+        visited: HashSet::new(),
+        macros: HashMap::new(),
     };
-    flatten(&program, resolver, opts)
+    let mut diags = Vec::new();
+    macros::collect_macros(src, &mut ctx.macros);
+    if opts.expand_macros {
+        let mut seen = HashSet::new();
+        precollect_macros(src, file, &mut ctx, 0, &mut seen);
+    }
+    let expanded = if opts.expand_macros {
+        macros::expand_text(src, &ctx.macros, 0, opts.max_depth, &mut diags)
+    } else {
+        src.to_string()
+    };
+    let program = match sa_parser::parse_source(&expanded, file) {
+        Ok(program) => program,
+        Err(mut parse_diags) => {
+            diags.append(&mut parse_diags);
+            return Err(diags);
+        }
+    };
+    let mut result = flatten_rec(&program, file, 0, &mut ctx, &mut diags);
+    if opts.expand_macros {
+        result.defs.clear();
+    }
+    if diags.is_empty() {
+        Ok(result)
+    } else {
+        Err(diags)
+    }
 }
 
 #[cfg(test)]
@@ -286,5 +378,46 @@ mod tests {
             assert!(program.imports.is_empty());
             assert!(program.defs.is_empty());
         }
+    }
+
+    #[test]
+    fn flatten_source_expands_macros_from_transitive_imports() {
+        let defs_src = "[MACRO] MAKE %out, %value\n    %out = add %value, 1\n[END_MACRO]\n";
+        let root = "@import \"middle.sa\"\n@main() -> i32:\nL_ENTRY:\n    EXPAND MAKE r0, 4\n    return r0\n";
+        let mut resolver = MapResolver::default();
+        resolver.files.insert("defs.sa".into(), defs_src.into());
+        resolver
+            .files
+            .insert("middle.sa".into(), "@import \"defs.sa\"\n".into());
+        let result = flatten_source(root, "main.sa", &resolver, &FlattenOptions::default())
+            .unwrap_or_else(|diags| panic!("{diags:?}"));
+        let instrs = &result.function("main").unwrap().blocks[0].instrs;
+        assert!(instrs.iter().any(|ins| ins.raw == "r0 = add 4, 1"));
+        assert!(!instrs.iter().any(|ins| ins.raw.contains("EXPAND")));
+    }
+
+    #[test]
+    fn flatten_source_keeps_repeated_macro_labels_unique() {
+        let defs_src = "[MACRO] JUMPY %out\n    br %out -> L_YES_%out, L_NO_%out\nL_YES_%out:\n    jmp L_NO_%out\nL_NO_%out:\n[END_MACRO]\n";
+        let root = "@import \"defs.sa\"\n@main() -> i32:\nL_ENTRY:\n    EXPAND JUMPY a\n    EXPAND JUMPY b\n    return 0\n";
+        let mut resolver = MapResolver::default();
+        resolver.files.insert("defs.sa".into(), defs_src.into());
+        let result = flatten_source(root, "main.sa", &resolver, &FlattenOptions::default())
+            .unwrap_or_else(|diags| panic!("{diags:?}"));
+        let labels = result.function("main").unwrap().labels();
+        assert_eq!(labels.len(), 5, "{labels:?}");
+        assert!(labels.contains(&"L_YES_a__m1"));
+        assert!(labels.contains(&"L_NO_b__m2"));
+    }
+
+    #[test]
+    fn flatten_source_reports_unknown_macro() {
+        let resolver = MapResolver::default();
+        let src = "@main() -> i32:\nL_ENTRY:\n    EXPAND MISSING 1\n";
+        let diags = flatten_source(src, "main.sa", &resolver, &FlattenOptions::default())
+            .unwrap_err();
+        assert!(diags
+            .iter()
+            .any(|diag| diag.trap == Trap::UndefinedMacro));
     }
 }

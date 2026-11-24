@@ -328,6 +328,30 @@ fn externs_get_shims_and_calls_dispatch() {
 }
 
 #[test]
+fn extra_destinations_are_declared_and_bound() {
+    let mut exchange = typed(
+        InstructionKind::Cmpxchg {
+            addr: Address::new(Operand::reg("p"), 0),
+            expected: Operand::Int(0),
+            replacement: Operand::Int(1),
+            order: sa_ir::AtomicOrdering::SeqCst,
+        },
+        "old",
+        sa_ir::PrimType::I32,
+    );
+    exchange.extra_dests = vec!["ok".into()];
+    let p = program(vec![function("main", vec![block("entry", vec![
+        dest(InstructionKind::Alloc { size: Operand::Int(8) }, "p"),
+        exchange,
+        ins(InstructionKind::Return { value: Some(Operand::reg("ok")) }),
+    ])])]);
+    let js = emit_js(&p, &JsOptions::default()).unwrap();
+    assert!(js.contains("let r_ok = 0;"), "{js}");
+    assert!(js.contains("r_ok = (r_old === sa_num(0) ? 1 : 0);"), "{js}");
+    node_check(&js, true);
+}
+
+#[test]
 fn atomics_and_fences_are_valid() {
     let p = program(vec![function("main", vec![block("entry", vec![
         dest(InstructionKind::Alloc { size: Operand::Int(8) }, "p"),

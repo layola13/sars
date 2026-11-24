@@ -14,22 +14,26 @@ pub(crate) fn parse_instruction(
     diags: &mut Vec<Diagnostic>,
 ) -> Option<Instruction> {
     let loc = tokens[0].loc.clone();
-    let raw = join(tokens);
     let mut dest: Option<String> = None;
+    let mut extra_dests: Vec<String> = Vec::new();
+    let raw = join(tokens);
     let mut rhs = tokens;
     if let Some(eq) = top_equal(tokens) {
         if eq == 0 {
             bad(diags, loc.clone(), function, Trap::ParseError, "missing destination");
             return None;
         }
-        dest = tokens[..eq]
+        let lhs: Vec<String> = split_commas(&tokens[..eq])
             .iter()
-            .find(|t| t.kind == TokenKind::Ident)
-            .map(|t| t.text.clone());
-        if dest.is_none() {
+            .filter_map(|part| part.iter().find(|t| t.kind == TokenKind::Ident))
+            .map(|t| t.text.clone())
+            .collect();
+        if lhs.is_empty() {
             bad(diags, loc.clone(), function, Trap::ParseError, "missing destination");
             return None;
         }
+        dest = Some(lhs[0].clone());
+        extra_dests = lhs[1..].to_vec();
         rhs = &tokens[eq + 1..];
         if rhs.is_empty() {
             bad(diags, loc, function, Trap::ParseError, "missing instruction after '='");
@@ -274,6 +278,11 @@ pub(crate) fn parse_instruction(
         InstructionKind::VaEnd
     } else if first.is_ident("nop") {
         InstructionKind::Nop
+    } else if first.kind == TokenKind::Other('$')
+        && work.len() >= 2
+        && work.last().map(|t| t.kind) == Some(TokenKind::Other('$'))
+    {
+        InstructionKind::Native { text: join(&work[1..work.len() - 1]) }
     } else if first.kind == TokenKind::Ident {
         if let Some(op) = OpKind::parse(&first.text) {
             InstructionKind::Op {
@@ -314,15 +323,17 @@ pub(crate) fn parse_instruction(
     Some(finish(
         kind,
         dest.as_deref(),
+        &extra_dests,
         ty,
         loc,
-        raw,
+        sanitize_keyword_operands(raw),
     ))
 }
 
 fn finish(
     kind: InstructionKind,
     dest: Option<&str>,
+    extra_dests: &[String],
     ty: Option<PrimType>,
     loc: SourceLoc,
     raw: String,
@@ -331,10 +342,67 @@ fn finish(
     if let Some(d) = dest {
         ins = ins.with_dest(d);
     }
+    if !extra_dests.is_empty() {
+        ins = ins.with_extra_dests(extra_dests.iter().cloned());
+    }
     if let Some(t) = ty {
         ins = ins.with_ty(t);
     }
     ins
+}
+
+fn sanitize_keyword_operands(raw: String) -> String {
+    const KEYWORDS: &[&str] = &["fn ", "let ", "impl ", "struct ", "enum ", "match "];
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            out.push(c as char);
+            i += 1;
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if c == b'"' {
+            in_string = true;
+            out.push(c as char);
+            i += 1;
+            continue;
+        }
+        let prev_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        let mut matched = false;
+        if prev_ok {
+            for keyword in KEYWORDS {
+                if !raw[i..].starts_with(keyword) {
+                    continue;
+                }
+                let next = bytes.get(i + keyword.len()).copied();
+                let is_operand = next
+                    .map(|n| !(n.is_ascii_alphanumeric() || n == b'_' || n == b'('))
+                    .unwrap_or(false);
+                if is_operand {
+                    out.push_str(keyword.trim_end());
+                    i += keyword.len();
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if !matched {
+            out.push(c as char);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn optional_operand(tokens: &[Token]) -> Option<Operand> {
@@ -522,8 +590,9 @@ mod tests {
                 order: AtomicOrdering::Release,
             }
         );
+        let exchange = parse("old, ok = cmpxchg p+0, 0, 1 as i32 acquire");
         assert_eq!(
-            parse("old, ok = cmpxchg p+0, 0, 1 as i32 acquire").kind,
+            exchange.kind,
             InstructionKind::Cmpxchg {
                 addr: Address::new(Operand::reg("p"), 0),
                 expected: Operand::Int(0),
@@ -531,6 +600,10 @@ mod tests {
                 order: AtomicOrdering::Acquire,
             }
         );
+        assert_eq!(exchange.dest.as_deref(), Some("old"));
+        assert_eq!(exchange.extra_dests, vec!["ok".to_string()]);
+        assert_eq!(exchange.all_dests().collect::<Vec<_>>(), vec!["old", "ok"]);
+        assert!(exchange.raw.starts_with("old, ok = cmpxchg"));
         assert!(matches!(
             parse("old = atomic_rmw_add p+0, 3 seq_cst").kind,
             InstructionKind::AtomicRmw { op: AtomicRmwOp::Add, order: AtomicOrdering::SeqCst, .. }
@@ -542,6 +615,29 @@ mod tests {
         );
         assert_eq!(parse("va_start").kind, InstructionKind::VaStart);
         assert_eq!(parse("nop").kind, InstructionKind::Nop);
+    }
+
+    #[test]
+    fn keyword_like_dest_is_not_rendered_as_forbidden_keyword() {
+        let ins = parse("fn = alloc 16");
+        assert_eq!(ins.dest.as_deref(), Some("fn"));
+        assert_eq!(ins.raw, "fn= alloc 16");
+        assert!(!ins.raw.contains("fn "));
+        assert_eq!(parse("x = add a, 1").raw, "x = add a, 1");
+        let store = parse("store fn+0, 1 as i32");
+        assert_eq!(store.raw, "store fn+0, 1 as i32");
+        assert!(!store.raw.contains("fn "));
+        let genuine = parse("x = fn foo(1)");
+        assert!(genuine.raw.contains("fn foo"));
+    }
+
+    #[test]
+    fn native_escape_is_parsed() {
+        let ins = parse("$call void asm sideeffect \"\", \"\"()$");
+        assert_eq!(
+            ins.kind,
+            InstructionKind::Native { text: "call void asm sideeffect \"\", \"\" ()".into() }
+        );
     }
 
     #[test]

@@ -49,10 +49,10 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
         types.push(ty);
     }
     for ins in &instrs {
-        if let Some(name) = &ins.dest {
+        for name in ins.all_dests() {
             if !map.contains_key(name) {
                 let ty = storage_type(ins.ty).unwrap_or(VALTYPE_I64);
-                map.insert(name.clone(), types.len() as u32);
+                map.insert(name.to_string(), types.len() as u32);
                 types.push(ty);
             }
         }
@@ -800,6 +800,33 @@ mod tests {
         assert_eq!(branch_depth(1, "c", &labels, 3), Some(0));
         assert_eq!(branch_depth(2, "a", &labels, 3), Some(0));
         assert_eq!(branch_depth(2, "b", &labels, 3), None);
+    }
+
+    #[test]
+    fn extra_destinations_get_wasm_locals() {
+        let mut sig = Signature::new("main");
+        sig.return_ty = PrimType::I32;
+        let mut f = Function::new(sig, SourceLoc::unknown());
+        let mut entry = sa_ir::Block::new("entry", SourceLoc::unknown());
+        let mut exchange = Instruction::new(
+            InstructionKind::Cmpxchg {
+                addr: Address::new(Operand::reg("p"), 0),
+                expected: Operand::Int(0),
+                replacement: Operand::Int(1),
+                order: sa_ir::AtomicOrdering::SeqCst,
+            },
+            SourceLoc::unknown(),
+            "old, ok = cmpxchg",
+        );
+        exchange.dest = Some("old".into());
+        exchange.extra_dests = vec!["ok".into()];
+        entry.instrs.push(exchange);
+        f.blocks.push(entry);
+        let mut diags = Vec::new();
+        let regs = collect_registers(&f, &Program::new(), &mut diags);
+        assert!(diags.is_empty());
+        assert!(regs.map.contains_key("old"));
+        assert!(regs.map.contains_key("ok"));
     }
 
     #[test]

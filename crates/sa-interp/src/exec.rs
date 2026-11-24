@@ -304,11 +304,13 @@ impl<'a> Interpreter<'a> {
                     let ty = ins.ty.unwrap_or(PrimType::I64);
                     let old = self.memory.load(ptr, ty)?;
                     let expected = self.resolve(frame, expected)?;
-                    if old == expected {
+                    let success = old == expected;
+                    if success {
                         let replacement = self.resolve(frame, replacement)?;
                         self.memory.store(ptr, ty, &replacement)?;
                     }
                     set_dest(frame, ins, old);
+                    set_extra_dests(frame, ins, Value::Int(i128::from(success)));
                 }
                 InstructionKind::AtomicRmw { op, addr, value, .. } => {
                     let ptr = self.resolve_addr(frame, addr)?;
@@ -367,6 +369,15 @@ impl<'a> Interpreter<'a> {
                     frame.va_pos += 1;
                     set_dest(frame, ins, value);
                 }
+            }
+            if !matches!(ins.kind, InstructionKind::Cmpxchg { .. }) {
+                let value = ins
+                    .dest
+                    .as_ref()
+                    .and_then(|name| frame.regs.get(name))
+                    .cloned()
+                    .unwrap_or(Value::Int(0));
+                set_extra_dests(frame, ins, value);
             }
         }
     }
@@ -453,6 +464,12 @@ fn normalize_label(name: &str) -> &str {
 fn set_dest(frame: &mut Frame<'_>, ins: &Instruction, value: Value) {
     if let Some(dest) = &ins.dest {
         frame.regs.insert(dest.clone(), value);
+    }
+}
+
+fn set_extra_dests(frame: &mut Frame<'_>, ins: &Instruction, value: Value) {
+    for dest in &ins.extra_dests {
+        frame.regs.insert(dest.clone(), value.clone());
     }
 }
 
@@ -799,6 +816,48 @@ mod tests {
             it.run_function("@unknown", Vec::new()).unwrap(),
             Value::Int(0)
         );
+    }
+
+    #[test]
+    fn cmpxchg_binds_extra_success_dest() {
+        let mut exchange = ins(
+            InstructionKind::Cmpxchg {
+                addr: Address::new(Operand::reg("p"), 0),
+                expected: Operand::Int(0),
+                replacement: Operand::Int(1),
+                order: sa_ir::AtomicOrdering::SeqCst,
+            },
+            Some("old"),
+            Some(PrimType::I32),
+        );
+        exchange.extra_dests = vec!["ok".into()];
+        let p = program(vec![func(
+            "main",
+            vec![block(
+                "entry",
+                vec![
+                    ins(InstructionKind::Alloc { size: Operand::Int(8) }, Some("p"), None),
+                    ins(
+                        InstructionKind::Store {
+                            addr: Address::new(Operand::reg("p"), 0),
+                            value: Operand::Int(0),
+                        },
+                        None,
+                        Some(PrimType::I32),
+                    ),
+                    exchange,
+                    ins(
+                        InstructionKind::Return {
+                            value: Some(Operand::reg("ok")),
+                        },
+                        None,
+                        None,
+                    ),
+                ],
+            )],
+        )]);
+        let mut it = Interpreter::new(&p, InterpOptions::default());
+        assert_eq!(it.run().unwrap(), 1);
     }
 
     #[test]

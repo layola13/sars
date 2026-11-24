@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegKind {
@@ -26,6 +26,7 @@ pub struct FnState {
     pub fallible: HashMap<String, bool>,
     pub borrow_origin: HashMap<String, String>,
     pub origin_base: HashMap<String, RegState>,
+    pub escaped: HashSet<String>,
 }
 
 impl FnState {
@@ -42,6 +43,7 @@ impl FnState {
             && self.fallible == other.fallible
             && self.borrow_origin == other.borrow_origin
             && self.origin_base == other.origin_base
+            && self.escaped == other.escaped
     }
 
     pub fn merge(&self, other: &FnState) -> (FnState, Vec<(String, RegState, RegState)>) {
@@ -80,6 +82,7 @@ impl FnState {
                 out.origin_base.insert(key.clone(), value.clone());
             }
         }
+        out.escaped = self.escaped.union(&other.escaped).cloned().collect();
         (out, conflicts)
     }
 }

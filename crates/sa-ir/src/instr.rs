@@ -516,6 +516,7 @@ pub enum InstructionKind {
 pub struct Instruction {
     pub kind: InstructionKind,
     pub dest: Option<String>,
+    pub extra_dests: Vec<String>,
     pub ty: Option<PrimType>,
     pub loc: SourceLoc,
     pub raw: String,
@@ -526,6 +527,7 @@ impl Instruction {
         Self {
             kind,
             dest: None,
+            extra_dests: Vec::new(),
             ty: None,
             loc,
             raw: raw.into(),
@@ -535,6 +537,22 @@ impl Instruction {
     pub fn with_dest(mut self, dest: impl Into<String>) -> Self {
         self.dest = Some(dest.into());
         self
+    }
+
+    pub fn with_extra_dests<I, S>(mut self, dests: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.extra_dests = dests.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn all_dests(&self) -> impl Iterator<Item = &str> {
+        self.dest
+            .as_deref()
+            .into_iter()
+            .chain(self.extra_dests.iter().map(String::as_str))
     }
 
     pub fn with_ty(mut self, ty: PrimType) -> Self {
@@ -624,9 +642,13 @@ impl Instruction {
     }
 
     pub fn to_text(&self) -> String {
-        let prefix = match &self.dest {
-            Some(d) => format!("{d} = "),
-            None => String::new(),
+        let prefix = {
+            let dests: Vec<&str> = self.all_dests().collect();
+            if dests.is_empty() {
+                String::new()
+            } else {
+                format!("{} = ", dests.join(", "))
+            }
         };
         let body = match &self.kind {
             InstructionKind::Alloc { size } => format!("alloc {size}"),
@@ -714,5 +736,27 @@ impl Instruction {
             line.push_str(&format!(" as {ty}"));
         }
         line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extra_dests_default_empty_and_render() {
+        let loc = SourceLoc::unknown();
+        let ins = Instruction::new(InstructionKind::Nop, loc.clone(), "nop");
+        assert!(ins.extra_dests.is_empty());
+        assert_eq!(ins.all_dests().count(), 0);
+        assert_eq!(ins.to_text(), "nop");
+
+        let ins = Instruction::new(InstructionKind::Nop, loc, "old, ok = nop")
+            .with_dest("old")
+            .with_extra_dests(["ok"])
+            .with_ty(PrimType::I32);
+        assert_eq!(ins.extra_dests, vec!["ok".to_string()]);
+        assert_eq!(ins.all_dests().collect::<Vec<_>>(), vec!["old", "ok"]);
+        assert_eq!(ins.to_text(), "old, ok = nop as i32");
     }
 }

@@ -72,13 +72,13 @@ fn check_redefine(ctx: &mut RuleCtx, state: &FnState, reg: &str, loc: &SourceLoc
 }
 
 fn define(ctx: &mut RuleCtx, ins: &Instruction, state: &mut FnState, new_state: RegState, loc: &SourceLoc) {
-    if let Some(dest) = ins.dest.as_deref() {
+    for dest in ins.all_dests() {
         let self_update = matches!(state.state_of(dest), RegState::Owned { .. })
             && ins.reads().iter().any(|op| matches!(op, Operand::Reg(name) if name == dest));
         if !self_update {
             check_redefine(ctx, state, dest, loc);
         }
-        state.set(dest, new_state);
+        state.set(dest, new_state.clone());
     }
 }
 
@@ -169,6 +169,16 @@ fn consume(ctx: &mut RuleCtx, state: &mut FnState, op: &Operand, loc: &SourceLoc
         ),
         _ => state.set(name, RegState::Moved),
     }
+}
+
+fn consume_assign(ctx: &mut RuleCtx, state: &mut FnState, op: &Operand, loc: &SourceLoc) {
+    if let Operand::Reg(name) = op {
+        if matches!(state.state_of(name), RegState::Owned { kind: RegKind::Param }) {
+            read_operand(ctx, op, state, loc);
+            return;
+        }
+    }
+    consume(ctx, state, op, loc);
 }
 
 fn add_borrow(
@@ -361,7 +371,16 @@ fn check_atomic(ctx: &mut RuleCtx, addr: &str, order: sa_ir::AtomicOrdering, loc
     ctx.atomics.insert(addr.to_string(), order);
 }
 
+fn mark_escaped_alloc(state: &mut FnState, op: &Operand) {
+    if let Operand::Reg(name) = op {
+        if matches!(state.state_of(name), RegState::Owned { kind: RegKind::Alloc }) {
+            state.escaped.insert(name.clone());
+        }
+    }
+}
+
 fn apply_cap(ctx: &mut RuleCtx, state: &mut FnState, arg: &sa_ir::CallArg, loc: &SourceLoc) {
+    mark_escaped_alloc(state, &arg.value);
     match arg.cap {
         sa_ir::CapPrefix::Move => consume(ctx, state, &arg.value, loc),
         sa_ir::CapPrefix::Borrow => {
@@ -474,7 +493,10 @@ fn check_leaks(ctx: &mut RuleCtx, state: &FnState, loc: &SourceLoc) {
     let mut leaked: Vec<String> = state
         .regs
         .iter()
-        .filter(|(_, state)| matches!(state, RegState::Owned { kind: RegKind::Alloc }))
+        .filter(|(name, reg_state)| {
+            matches!(reg_state, RegState::Owned { kind: RegKind::Alloc })
+                && !state.escaped.contains(*name)
+        })
         .map(|(name, _)| name.clone())
         .collect();
     leaked.sort();
@@ -506,7 +528,7 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
             );
         }
         InstructionKind::Assign { src } => {
-            consume(ctx, state, src, loc);
+            consume_assign(ctx, state, src, loc);
             define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
         }
         InstructionKind::Move { src } => {
@@ -517,6 +539,14 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
                     state.fallible.insert(dest.to_string(), fallible);
                 }
             }
+        }
+        InstructionKind::Store { addr, value } => {
+            for operand in ins.reads() {
+                read_operand(ctx, operand, state, loc);
+            }
+            mark_escaped_alloc(state, &addr.base);
+            mark_escaped_alloc(state, value);
+            define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
         }
         InstructionKind::Release { reg } => release(ctx, state, reg, loc),
         InstructionKind::Take { reg } => {

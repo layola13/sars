@@ -374,6 +374,130 @@ fn fallible_contract_mismatch_is_rejected() {
 }
 
 #[test]
+fn extra_destinations_are_defined_by_their_instruction() {
+    let mut exchange = ins(
+        InstructionKind::Cmpxchg {
+            addr: sa_ir::Address::new(Operand::reg("p"), 0),
+            expected: Operand::Int(0),
+            replacement: Operand::Int(1),
+            order: sa_ir::AtomicOrdering::SeqCst,
+        },
+        3,
+    )
+    .with_dest("old");
+    exchange.extra_dests = vec!["ok".into()];
+    let source = function(
+        "main",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(InstructionKind::Alloc { size: Operand::Int(8) }, 2).with_dest("p"),
+                exchange,
+                ins(InstructionKind::Release { reg: "old".into() }, 4),
+                ins(InstructionKind::Release { reg: "ok".into() }, 5),
+                ins(InstructionKind::Release { reg: "p".into() }, 6),
+                ins(InstructionKind::Return { value: None }, 7),
+            ],
+            1,
+        )],
+    );
+    verify(&program(vec![source]), &VerifyOptions::default()).expect("extra dests are defined");
+}
+
+#[test]
+fn unused_allocation_is_still_a_leak() {
+    let source = function(
+        "main",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(InstructionKind::Alloc { size: Operand::Int(8) }, 2).with_dest("p"),
+                ins(InstructionKind::Return { value: None }, 3),
+            ],
+            1,
+        )],
+    );
+    let errors = verify(&program(vec![source]), &VerifyOptions::default()).unwrap_err();
+    assert!(has_trap(&errors, Trap::MemoryLeak), "{errors:?}");
+}
+
+#[test]
+fn allocation_stored_into_memory_is_not_a_leak() {
+    let source = function(
+        "main",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(InstructionKind::StackAlloc { size: Operand::Int(8) }, 2).with_dest("slot"),
+                ins(
+                    InstructionKind::Store {
+                        addr: sa_ir::Address::new(Operand::reg("slot"), 0),
+                        value: Operand::Int(1),
+                    },
+                    3,
+                ),
+                ins(InstructionKind::Return { value: None }, 4),
+            ],
+            1,
+        )],
+    );
+    verify(&program(vec![source]), &VerifyOptions::default()).expect("stored allocation escaped");
+}
+
+#[test]
+fn allocation_passed_to_call_is_not_a_leak() {
+    let mut sink = function("sink", vec![block("L_entry", vec![ins(InstructionKind::Return { value: None }, 2)], 1)]);
+    sink.sig.params.push(sa_ir::ParamSpec::new("p", PrimType::Ptr, CapPrefix::Borrow));
+    let source = function(
+        "main",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(InstructionKind::Alloc { size: Operand::Int(8) }, 2).with_dest("p"),
+                ins(
+                    InstructionKind::Call {
+                        target: "sink".into(),
+                        args: vec![sa_ir::CallArg::new(CapPrefix::Borrow, Operand::reg("p"))],
+                    },
+                    3,
+                ),
+                ins(InstructionKind::Return { value: None }, 4),
+            ],
+            1,
+        )],
+    );
+    verify(&program(vec![source, sink]), &VerifyOptions::default()).expect("passed allocation escaped");
+}
+
+#[test]
+fn plain_assignment_of_param_keeps_source_usable() {
+    let mut source = function(
+        "main",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(InstructionKind::Assign { src: Operand::reg("p") }, 2).with_dest("q"),
+                ins(
+                    InstructionKind::Call {
+                        target: "sink".into(),
+                        args: vec![sa_ir::CallArg::new(CapPrefix::Raw, Operand::reg("p"))],
+                    },
+                    3,
+                ),
+                ins(InstructionKind::Release { reg: "q".into() }, 4),
+                ins(InstructionKind::Return { value: None }, 5),
+            ],
+            1,
+        )],
+    );
+    source.sig.params.push(sa_ir::ParamSpec::new("p", PrimType::Ptr, CapPrefix::Raw));
+    let mut sink = function("sink", vec![block("L_entry", vec![ins(InstructionKind::Return { value: None }, 2)], 1)]);
+    sink.sig.params.push(sa_ir::ParamSpec::new("p", PrimType::Ptr, CapPrefix::Raw));
+    verify(&program(vec![source, sink]), &VerifyOptions::default())
+        .expect("assigning a param is a copy");
+}
+
+#[test]
 fn verify_function_checks_only_one_function() {
     let main = function(
         "main",

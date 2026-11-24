@@ -30,9 +30,13 @@ cargo build --release
 ## Current status
 
 - `cargo test --workspace`: all unit tests green.
-- 97/120 sampled `sci/demos/rosetta/*/main.sa` files pass `sa check`;
-  hello-world and array-sum pass end-to-end under `run`, `build-js` (verified
-  with Node) and `build-wasm` (verified with `WebAssembly.Module`).
-- Known gaps: `EXPAND` macro bodies from `.sal` files are not yet inlined,
-  a handful of demos use multi-destination `cmpxchg`, and the interpreter
-  is still incomplete for vtable/struct-heavy programs.
+- 120/120 sampled `sci/demos/rosetta/*/main.sa` files pass `sa check`;
+  the full 968-file corpus reaches 932 passes with no regressions.
+  `[MACRO]` / `EXPAND` bodies, multi-destination `cmpxchg`, vtable constants
+  and import-relative resolution are implemented.
+- hello-world, array-sum and fallible-float-loop pass end-to-end under `run`
+  and `build-js` (verified with Node); `build-wasm` output validates with
+  `WebAssembly.Module`.
+- Known gaps: interpreter/JS semantics for a few macro-heavy programs
+  (e.g. `104_if_let_chains` takes its error branch) and some
+  vtable/struct-heavy demos; native/LLVM and C backends are not ported.

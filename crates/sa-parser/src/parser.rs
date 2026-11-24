@@ -66,6 +66,9 @@ impl Parser {
             }
             return;
         }
+        if self.current_fn.is_none() && line[0].is_ident("EXPAND") {
+            return;
+        }
         match line[0].kind {
             TokenKind::Directive => self.parse_directive(line),
             TokenKind::HashDirective => {
@@ -386,6 +389,13 @@ mod tests {
         let errs = parse_source("@f():\n  x = \"oops\n", "t.sa").unwrap_err();
         assert_eq!(errs.len(), 1);
         assert_eq!(errs[0].trap, Trap::ParseError);
+    }
+
+    #[test]
+    fn top_level_expand_is_ignored() {
+        let p = first_program("EXPAND DEFINE_THING x\n@f():\nL_ENTRY:\n  nop\n");
+        assert_eq!(p.functions.len(), 1);
+        assert_eq!(p.function("f").unwrap().all_instructions().len(), 1);
     }
 
     #[test]
