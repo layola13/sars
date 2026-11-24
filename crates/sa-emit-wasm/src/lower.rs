@@ -1,0 +1,802 @@
+use crate::leb::{put_sleb, put_u8, put_uleb};
+use crate::opcode::*;
+use sa_ir::{Address, Diagnostic, Function, Instruction, InstructionKind, Operand, OpKind, PrimType, Program, Signature, SourceLoc, Trap};
+use std::collections::HashMap;
+
+pub struct FunctionCode {
+    pub locals: Vec<(u32, u8)>,
+    pub code: Vec<u8>,
+}
+
+struct Registers {
+    map: HashMap<String, u32>,
+    types: Vec<u8>,
+    scratch: [u32; 2],
+}
+
+fn diag(trap: Trap, message: &str, loc: &SourceLoc, function: &str) -> Diagnostic {
+    Diagnostic::new(trap, message, loc.clone()).in_function(function)
+}
+
+fn collect_registers(func: &Function, diags: &mut Vec<Diagnostic>) -> Registers {
+    let mut map = HashMap::new();
+    let mut types = Vec::new();
+    for p in &func.sig.params {
+        let ty = match storage_type(Some(p.ty)) {
+            Some(t) => t,
+            None => {
+                diags.push(diag(
+                    Trap::UnsupportedType,
+                    "v128 parameters are not supported",
+                    &func.loc,
+                    func.name(),
+                ));
+                VALTYPE_I64
+            }
+        };
+        map.insert(p.name.clone(), types.len() as u32);
+        types.push(ty);
+    }
+    let instrs = func.all_instructions();
+    for name in &func.locals {
+        let hint = instrs
+            .iter()
+            .find(|i| i.dest.as_deref() == Some(name.as_str()) && i.ty.is_some())
+            .and_then(|i| i.ty);
+        let ty = storage_type(hint).unwrap_or(VALTYPE_I64);
+        map.insert(name.clone(), types.len() as u32);
+        types.push(ty);
+    }
+    for ins in &instrs {
+        if let Some(name) = &ins.dest {
+            if !map.contains_key(name) {
+                let ty = storage_type(ins.ty).unwrap_or(VALTYPE_I64);
+                map.insert(name.clone(), types.len() as u32);
+                types.push(ty);
+            }
+        }
+    }
+    let scratch = [
+        {
+            let name = "__wa_scratch_0".to_string();
+            map.insert(name, types.len() as u32);
+            types.push(VALTYPE_I64);
+            types.len() as u32 - 1
+        },
+        {
+            let name = "__wa_scratch_1".to_string();
+            map.insert(name, types.len() as u32);
+            types.push(VALTYPE_I64);
+            types.len() as u32 - 1
+        },
+    ];
+    Registers { map, types, scratch }
+}
+
+fn local_get(out: &mut Vec<u8>, index: u32) {
+    put_u8(out, LOCAL_GET);
+    put_uleb(out, index as u64);
+}
+
+fn local_set(out: &mut Vec<u8>, index: u32) {
+    put_u8(out, LOCAL_SET);
+    put_uleb(out, index as u64);
+}
+
+fn store_or_drop(out: &mut Vec<u8>, ins: &Instruction, regs: &Registers) {
+    if let Some(name) = &ins.dest {
+        if let Some(&index) = regs.map.get(name) {
+            local_set(out, index);
+            return;
+        }
+    }
+    put_u8(out, DROP);
+}
+
+fn i64_const(out: &mut Vec<u8>, v: i64) {
+    put_u8(out, I64_CONST);
+    put_sleb(out, v);
+}
+
+fn i32_const(out: &mut Vec<u8>, v: i32) {
+    put_u8(out, I32_CONST);
+    put_sleb(out, v as i64);
+}
+
+fn f64_const(out: &mut Vec<u8>, v: f64) {
+    put_u8(out, F64_CONST);
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn emit_int_const(out: &mut Vec<u8>, v: i64, storage: u8) {
+    if storage == VALTYPE_F64 {
+        f64_const(out, v as f64);
+    } else if v >= i32::MIN as i64 && v <= i32::MAX as i64 {
+        i32_const(out, v as i32);
+        put_u8(out, I64_EXTEND_I32_S);
+    } else {
+        i64_const(out, v);
+    }
+}
+
+fn emit_float_const(out: &mut Vec<u8>, v: f64, storage: u8) {
+    if storage == VALTYPE_F64 {
+        f64_const(out, v);
+    } else {
+        emit_int_const(out, v as i64, VALTYPE_I64);
+    }
+}
+
+fn convert(out: &mut Vec<u8>, from: u8, to: u8) {
+    if from == to {
+        return;
+    }
+    match (from, to) {
+        (VALTYPE_I64, VALTYPE_F64) => put_u8(out, F64_CONVERT_I64_S),
+        (VALTYPE_F64, VALTYPE_I64) => put_u8(out, I64_TRUNC_F64_S),
+        _ => {}
+    }
+}
+
+fn emit_operand(
+    out: &mut Vec<u8>,
+    op: &Operand,
+    regs: &Registers,
+    storage: u8,
+    loc: &SourceLoc,
+    function: &str,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match op {
+        Operand::Reg(name) => {
+            if let Some(&index) = regs.map.get(name) {
+                local_get(out, index);
+                convert(out, regs.types[index as usize], storage);
+            } else {
+                emit_int_const(out, 0, storage);
+                diags.push(diag(
+                    Trap::UnknownRegister,
+                    &format!("register {name} is not defined"),
+                    loc,
+                    function,
+                ));
+            }
+        }
+        Operand::Int(v) => emit_int_const(out, *v as i64, storage),
+        Operand::Float(v) => emit_float_const(out, *v, storage),
+        Operand::Null | Operand::Undef | Operand::Label(_) => emit_int_const(out, 0, storage),
+        Operand::Bytes(b) => emit_int_const(out, b.len() as i64, storage),
+        Operand::Utf8(s) => emit_int_const(out, s.len() as i64, storage),
+        Operand::Symbol(name) => {
+            diags.push(diag(
+                Trap::UnsupportedType,
+                &format!("symbol operand {name} is not supported"),
+                loc,
+                function,
+            ));
+            emit_int_const(out, 0, storage);
+        }
+    }
+}
+
+fn operand_storage(op: Option<&Operand>, regs: &Registers, hint: Option<PrimType>) -> u8 {
+    match op {
+        Some(Operand::Reg(name)) => regs
+            .map
+            .get(name)
+            .map(|&i| regs.types[i as usize])
+            .unwrap_or(VALTYPE_I64),
+        Some(Operand::Float(_)) => VALTYPE_F64,
+        _ => storage_type(hint).unwrap_or(VALTYPE_I64),
+    }
+}
+
+fn emit_address(
+    out: &mut Vec<u8>,
+    addr: &Address,
+    regs: &Registers,
+    loc: &SourceLoc,
+    function: &str,
+    diags: &mut Vec<Diagnostic>,
+) {
+    emit_operand(out, &addr.base, regs, VALTYPE_I64, loc, function, diags);
+    put_u8(out, I32_WRAP_I64);
+}
+
+fn memarg(out: &mut Vec<u8>, align: u32, offset: i64) {
+    put_uleb(out, align as u64);
+    put_uleb(out, offset as u64);
+}
+
+fn branch_depth(current: usize, target: &str, labels: &[String], n: usize) -> Option<u32> {
+    if target.is_empty() || target == "exit" {
+        return Some((n - current) as u32);
+    }
+    let j = labels.iter().position(|l| l == target)?;
+    if j == 0 {
+        Some((n - 1 - current) as u32)
+    } else if j > current {
+        Some((j - current - 1) as u32)
+    } else {
+        None
+    }
+}
+
+fn emit_branch(
+    out: &mut Vec<u8>,
+    target: &str,
+    labels: &[String],
+    current: usize,
+    n: usize,
+    conditional: bool,
+) {
+    match branch_depth(current, target, labels, n) {
+        Some(depth) => {
+            put_u8(out, if conditional { BR_IF } else { BR });
+            put_uleb(out, depth as u64);
+        }
+        None => {
+            if conditional {
+                put_u8(out, DROP);
+            }
+            put_u8(out, UNREACHABLE);
+        }
+    }
+}
+
+fn condition_to_i32(out: &mut Vec<u8>) {
+    put_u8(out, I64_EQZ);
+    put_u8(out, I32_EQZ);
+}
+
+fn numeric_opcode(op: OpKind, storage: u8, ty: Option<PrimType>) -> Option<u8> {
+    let float = storage == VALTYPE_F64;
+    let signed = is_signed_prim(ty);
+    let code = match op {
+        OpKind::Add | OpKind::FAdd => {
+            if float {
+                F64_ADD
+            } else {
+                I64_ADD
+            }
+        }
+        OpKind::Sub | OpKind::FSub => {
+            if float {
+                F64_SUB
+            } else {
+                I64_SUB
+            }
+        }
+        OpKind::Mul | OpKind::FMul => {
+            if float {
+                F64_MUL
+            } else {
+                I64_MUL
+            }
+        }
+        OpKind::Div | OpKind::SDiv | OpKind::FDiv => {
+            if float {
+                F64_DIV
+            } else if signed || matches!(op, OpKind::SDiv) {
+                I64_DIV_S
+            } else {
+                I64_DIV_U
+            }
+        }
+        OpKind::UDiv => I64_DIV_U,
+        OpKind::Rem | OpKind::SRem => {
+            if signed || matches!(op, OpKind::SRem) {
+                I64_REM_S
+            } else {
+                I64_REM_U
+            }
+        }
+        OpKind::URem => I64_REM_U,
+        OpKind::And => I64_AND,
+        OpKind::Or => I64_OR,
+        OpKind::Xor => I64_XOR,
+        OpKind::Shl => I64_SHL,
+        OpKind::LShr | OpKind::Shr => I64_SHR_U,
+        OpKind::AShr => I64_SHR_S,
+        OpKind::Eq | OpKind::FcmpEq => {
+            if float {
+                F64_EQ
+            } else {
+                I64_EQ
+            }
+        }
+        OpKind::Ne | OpKind::FcmpNe => {
+            if float {
+                F64_NE
+            } else {
+                I64_NE
+            }
+        }
+        OpKind::Slt | OpKind::Lt | OpKind::FcmpLt => {
+            if float {
+                F64_LT
+            } else if signed || matches!(op, OpKind::Slt) {
+                I64_LT_S
+            } else {
+                I64_LT_U
+            }
+        }
+        OpKind::Sle | OpKind::FcmpLe => {
+            if float {
+                F64_LE
+            } else {
+                I64_LE_S
+            }
+        }
+        OpKind::Sgt | OpKind::Gt | OpKind::FcmpGt => {
+            if float {
+                F64_GT
+            } else if signed || matches!(op, OpKind::Sgt) {
+                I64_GT_S
+            } else {
+                I64_GT_U
+            }
+        }
+        OpKind::Sge | OpKind::FcmpGe => {
+            if float {
+                F64_GE
+            } else {
+                I64_GE_S
+            }
+        }
+        OpKind::Ult => I64_LT_U,
+        OpKind::Ule => I64_LE_U,
+        OpKind::Ugt => I64_GT_U,
+        OpKind::Uge => I64_GE_U,
+        OpKind::Fptosi => I64_TRUNC_F64_S,
+        OpKind::Sitofp => F64_CONVERT_I64_S,
+        OpKind::Uitofp => F64_CONVERT_I64_U,
+        OpKind::Fpext | OpKind::Fptrunc => return None,
+        OpKind::Trunc | OpKind::Zext | OpKind::Sext | OpKind::Bitcast => return None,
+        OpKind::Neg | OpKind::FNeg | OpKind::Not => return None,
+        OpKind::AddV128 | OpKind::SubV128 | OpKind::MulV128 | OpKind::ShuffleV128
+        | OpKind::ExtractLane | OpKind::InsertLane => return None,
+    };
+    Some(code)
+}
+
+fn lower_op(
+    out: &mut Vec<u8>,
+    ins: &Instruction,
+    op: OpKind,
+    args: &[Operand],
+    regs: &Registers,
+    dest_storage: u8,
+    function: &str,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let loc = &ins.loc;
+    let storage = match op {
+        OpKind::Sitofp | OpKind::Uitofp => VALTYPE_I64,
+        OpKind::Fptosi => VALTYPE_F64,
+        _ => operand_storage(args.first(), regs, ins.ty),
+    };
+    let comparison = op.is_comparison();
+    let conversion = op.is_conversion();
+    let mut result_storage = storage;
+    match op {
+        OpKind::AddV128 | OpKind::SubV128 | OpKind::MulV128 | OpKind::ShuffleV128
+        | OpKind::ExtractLane | OpKind::InsertLane => {
+            diags.push(diag(
+                Trap::UnsupportedType,
+                "v128 operations are not supported",
+                loc,
+                function,
+            ));
+            return;
+        }
+        OpKind::Neg | OpKind::FNeg => {
+            if storage == VALTYPE_F64 {
+                if let Some(a) = args.first() {
+                    emit_operand(out, a, regs, storage, loc, function, diags);
+                }
+                put_u8(out, F64_NEG);
+            } else {
+                emit_int_const(out, 0, VALTYPE_I64);
+                if let Some(a) = args.first() {
+                    emit_operand(out, a, regs, VALTYPE_I64, loc, function, diags);
+                }
+                put_u8(out, I64_SUB);
+                result_storage = VALTYPE_I64;
+            }
+        }
+        OpKind::Not => {
+            emit_int_const(out, -1, VALTYPE_I64);
+            if let Some(a) = args.first() {
+                emit_operand(out, a, regs, VALTYPE_I64, loc, function, diags);
+            }
+            put_u8(out, I64_XOR);
+            result_storage = VALTYPE_I64;
+        }
+        _ => {
+            if args.len() == 3 {
+                diags.push(diag(
+                    Trap::UnsupportedInstruction,
+                    "ternary operations are not supported",
+                    loc,
+                    function,
+                ));
+                return;
+            }
+            for a in args {
+                emit_operand(out, a, regs, storage, loc, function, diags);
+            }
+            if let Some(code) = numeric_opcode(op, storage, ins.ty) {
+                put_u8(out, code);
+                result_storage = match op {
+                    OpKind::Fptosi => VALTYPE_I64,
+                    OpKind::Sitofp | OpKind::Uitofp => VALTYPE_F64,
+                    _ => storage,
+                };
+            } else if !conversion {
+                diags.push(diag(
+                    Trap::UnsupportedInstruction,
+                    "operation cannot be lowered",
+                    loc,
+                    function,
+                ));
+                return;
+            }
+            if comparison {
+                put_u8(out, I64_EXTEND_I32_U);
+                result_storage = VALTYPE_I64;
+            }
+        }
+    }
+    convert(out, result_storage, dest_storage);
+}
+
+fn call_sig<'a>(program: &'a Program, name: &str) -> Option<&'a Signature> {
+    program
+        .externs
+        .iter()
+        .find(|e| e.name == name)
+        .or_else(|| {
+            program
+                .functions
+                .iter()
+                .find(|f| f.sig.name == name)
+                .map(|f| &f.sig)
+        })
+}
+
+fn lower_instruction(
+    out: &mut Vec<u8>,
+    ins: &Instruction,
+    regs: &Registers,
+    func_index: &HashMap<String, u32>,
+    labels: &[String],
+    current: usize,
+    n: usize,
+    program: &Program,
+    function: &str,
+    ret_storage: u8,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let loc = &ins.loc;
+    if ins.ty == Some(PrimType::V128) {
+        diags.push(diag(
+            Trap::UnsupportedType,
+            "v128 is not supported",
+            loc,
+            function,
+        ));
+        return;
+    }
+    let dest_storage = ins
+        .dest
+        .as_ref()
+        .and_then(|d| regs.map.get(d))
+        .map(|&i| regs.types[i as usize])
+        .unwrap_or(VALTYPE_I64);
+    let set_dest = |out: &mut Vec<u8>| {
+        if let Some(name) = &ins.dest {
+            if let Some(&index) = regs.map.get(name) {
+                local_set(out, index);
+            }
+        }
+    };
+    match &ins.kind {
+        InstructionKind::Alloc { size } | InstructionKind::StackAlloc { size } => {
+            match size {
+                Operand::Bytes(b) => emit_int_const(out, b.len() as i64, VALTYPE_I64),
+                Operand::Utf8(s) => emit_int_const(out, s.len() as i64, VALTYPE_I64),
+                _ => emit_operand(out, size, regs, VALTYPE_I64, loc, function, diags),
+            }
+            local_set(out, regs.scratch[1]);
+            i32_const(out, 0);
+            put_u8(out, I64_LOAD);
+            memarg(out, 3, 0);
+            local_set(out, regs.scratch[0]);
+            local_get(out, regs.scratch[0]);
+            local_get(out, regs.scratch[1]);
+            put_u8(out, I64_ADD);
+            local_set(out, regs.scratch[1]);
+            local_get(out, regs.scratch[0]);
+            if ins.dest.is_some() {
+                set_dest(out);
+            } else {
+                put_u8(out, DROP);
+            }
+            i32_const(out, 0);
+            local_get(out, regs.scratch[1]);
+            put_u8(out, I64_STORE);
+            memarg(out, 3, 0);
+        }
+        InstructionKind::Load { addr } => {
+            let (code, align) = match load_opcode(ins.ty) {
+                Some(v) => v,
+                None => {
+                    diags.push(diag(
+                        Trap::UnsupportedType,
+                        "load type is not supported",
+                        loc,
+                        function,
+                    ));
+                    return;
+                }
+            };
+            emit_address(out, addr, regs, loc, function, diags);
+            put_u8(out, code);
+            memarg(out, align, addr.offset);
+            match valtype_for_prim(ins.ty.unwrap_or(PrimType::I64)) {
+                Some(VALTYPE_I32) => {
+                    put_u8(out, if is_signed_prim(ins.ty) {
+                        I64_EXTEND_I32_S
+                    } else {
+                        I64_EXTEND_I32_U
+                    });
+                }
+                Some(VALTYPE_F32) => put_u8(out, F64_PROMOTE_F32),
+                _ => {}
+            }
+            store_or_drop(out, ins, regs);
+        }
+        InstructionKind::Store { addr, value } => {
+            let (code, align) = match store_opcode(ins.ty) {
+                Some(v) => v,
+                None => {
+                    diags.push(diag(
+                        Trap::UnsupportedType,
+                        "store type is not supported",
+                        loc,
+                        function,
+                    ));
+                    return;
+                }
+            };
+            emit_address(out, addr, regs, loc, function, diags);
+            let mem_ty = valtype_for_prim(ins.ty.unwrap_or(PrimType::I64)).unwrap_or(VALTYPE_I64);
+            let value_storage = operand_storage(Some(value), regs, ins.ty);
+            emit_operand(out, value, regs, value_storage, loc, function, diags);
+            match (value_storage, mem_ty) {
+                (VALTYPE_I64, VALTYPE_F64) => put_u8(out, F64_CONVERT_I64_S),
+                (VALTYPE_I64, VALTYPE_F32) => {
+                    put_u8(out, F64_CONVERT_I64_S);
+                    put_u8(out, F32_DEMOTE_F64);
+                }
+                (VALTYPE_F64, VALTYPE_I32) => {
+                    put_u8(out, I64_TRUNC_F64_S);
+                    put_u8(out, I32_WRAP_I64);
+                }
+                (VALTYPE_F64, VALTYPE_I64) => put_u8(out, I64_TRUNC_F64_S),
+                (VALTYPE_F64, VALTYPE_F32) => put_u8(out, F32_DEMOTE_F64),
+                (VALTYPE_I64, VALTYPE_I32) => put_u8(out, I32_WRAP_I64),
+                _ => {}
+            }
+            put_u8(out, code);
+            memarg(out, align, addr.offset);
+        }
+        InstructionKind::Op { op, args } => {
+            lower_op(out, ins, *op, args, regs, dest_storage, function, diags);
+            store_or_drop(out, ins, regs);
+        }
+        InstructionKind::Jmp { target } => {
+            emit_branch(out, target, labels, current, n, false);
+        }
+        InstructionKind::Br { cond, then_label, else_label } => {
+            emit_operand(out, cond, regs, VALTYPE_I64, loc, function, diags);
+            condition_to_i32(out);
+            emit_branch(out, then_label, labels, current, n, true);
+            emit_branch(out, else_label, labels, current, n, false);
+        }
+        InstructionKind::BrNull { cond, target } => {
+            emit_operand(out, cond, regs, VALTYPE_I64, loc, function, diags);
+            put_u8(out, I64_EQZ);
+            emit_branch(out, target, labels, current, n, true);
+        }
+        InstructionKind::Call { target, args } => {
+            let sig = match call_sig(program, target) {
+                Some(s) => s,
+                None => {
+                    diags.push(diag(
+                        Trap::ImportResolutionFailed,
+                        &format!("call to unknown function {target}"),
+                        loc,
+                        function,
+                    ));
+                    return;
+                }
+            };
+            if sig.return_fallible {
+                diags.push(diag(
+                    Trap::UnsupportedType,
+                    "fallible call signatures are not supported",
+                    loc,
+                    function,
+                ));
+                return;
+            }
+            for (arg, param) in args.iter().zip(sig.params.iter()) {
+                let storage = storage_type(Some(param.ty)).unwrap_or(VALTYPE_I64);
+                emit_operand(out, &arg.value, regs, storage, loc, function, diags);
+            }
+            if let Some(&index) = func_index.get(target) {
+                put_u8(out, CALL);
+                put_uleb(out, index as u64);
+                if !sig.return_ty.is_void() {
+                    store_or_drop(out, ins, regs);
+                }
+            }
+        }
+        InstructionKind::CallIndirect { .. } => {
+            diags.push(diag(
+                Trap::UnsupportedInstruction,
+                "call_indirect is not supported",
+                loc,
+                function,
+            ));
+        }
+        InstructionKind::Return { value } | InstructionKind::EarlyReturn { value } => {
+            if let Some(v) = value {
+                emit_operand(out, v, regs, ret_storage, loc, function, diags);
+                put_u8(out, RETURN);
+                put_u8(out, UNREACHABLE);
+            } else {
+                emit_branch(out, "exit", labels, current, n, false);
+            }
+        }
+        InstructionKind::Assign { src }
+        | InstructionKind::Move { src }
+        | InstructionKind::RawCast { src }
+        | InstructionKind::AssumeSafe { src }
+        | InstructionKind::Borrow { src, .. }
+        | InstructionKind::AssumeBorrow { src, .. }
+        | InstructionKind::Try { src }
+        | InstructionKind::VaArg { src } => {
+            if ins.dest.is_some() {
+                emit_operand(out, src, regs, dest_storage, loc, function, diags);
+                set_dest(out);
+            }
+        }
+        InstructionKind::PtrAdd { base, offset } => {
+            emit_operand(out, base, regs, VALTYPE_I64, loc, function, diags);
+            emit_operand(out, offset, regs, VALTYPE_I64, loc, function, diags);
+            put_u8(out, I64_ADD);
+            store_or_drop(out, ins, regs);
+        }
+        InstructionKind::AtomicLoad { .. }
+        | InstructionKind::AtomicStore { .. }
+        | InstructionKind::Cmpxchg { .. }
+        | InstructionKind::AtomicRmw { .. }
+        | InstructionKind::Fence { .. } => {
+            diags.push(diag(
+                Trap::UnsupportedInstruction,
+                "atomic operations require target atomics support",
+                loc,
+                function,
+            ));
+        }
+        InstructionKind::Panic { .. } => put_u8(out, UNREACHABLE),
+        InstructionKind::Take { .. }
+        | InstructionKind::Release { .. }
+        | InstructionKind::VaStart
+        | InstructionKind::VaEnd
+        | InstructionKind::Native { .. }
+        | InstructionKind::Nop => {}
+    }
+}
+
+pub fn lower_function(
+    program: &Program,
+    func: &Function,
+    func_index: &HashMap<String, u32>,
+    entry: &str,
+    heap_start: i64,
+    diags: &mut Vec<Diagnostic>,
+) -> FunctionCode {
+    let regs = collect_registers(func, diags);
+    let mut locals = Vec::new();
+    for (index, ty) in regs.types.iter().enumerate() {
+        if index < func.sig.params.len() {
+            continue;
+        }
+        locals.push((1, *ty));
+    }
+    let mut code = Vec::new();
+    if func.sig.name == entry {
+        i32_const(&mut code, 0);
+        emit_int_const(&mut code, heap_start, VALTYPE_I64);
+        put_u8(&mut code, I64_STORE);
+        memarg(&mut code, 3, 0);
+    }
+    let blocks = &func.blocks;
+    let n = blocks.len();
+    let labels: Vec<String> = blocks.iter().map(|b| b.label.clone()).collect();
+    let ret_storage = storage_type(Some(func.sig.return_value_type())).unwrap_or(VALTYPE_I64);
+    if n > 0 {
+        put_u8(&mut code, BLOCK);
+        code.push(0x40);
+        put_u8(&mut code, LOOP);
+        code.push(0x40);
+        for _ in 1..n {
+            put_u8(&mut code, BLOCK);
+            code.push(0x40);
+        }
+        for (i, block) in blocks.iter().enumerate() {
+            for ins in &block.instrs {
+                lower_instruction(
+                    &mut code,
+                    ins,
+                    &regs,
+                    func_index,
+                    &labels,
+                    i,
+                    n,
+                    program,
+                    func.name(),
+                    ret_storage,
+                    diags,
+                );
+            }
+            if i + 1 < n {
+                put_u8(&mut code, END);
+            }
+        }
+        put_u8(&mut code, END);
+        put_u8(&mut code, END);
+    }
+    if !func.sig.return_ty.is_void() {
+        emit_int_const(&mut code, 0, ret_storage);
+    }
+    put_u8(&mut code, END);
+    FunctionCode { locals, code }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn branch_depths_two_blocks() {
+        let labels = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(branch_depth(0, "b", &labels, 2), Some(0));
+        assert_eq!(branch_depth(0, "a", &labels, 2), Some(1));
+        assert_eq!(branch_depth(0, "exit", &labels, 2), Some(2));
+        assert_eq!(branch_depth(1, "a", &labels, 2), Some(0));
+        assert_eq!(branch_depth(1, "exit", &labels, 2), Some(1));
+    }
+
+    #[test]
+    fn branch_depths_three_blocks() {
+        let labels = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        assert_eq!(branch_depth(0, "b", &labels, 3), Some(0));
+        assert_eq!(branch_depth(0, "c", &labels, 3), Some(1));
+        assert_eq!(branch_depth(1, "c", &labels, 3), Some(0));
+        assert_eq!(branch_depth(2, "a", &labels, 3), Some(0));
+        assert_eq!(branch_depth(2, "b", &labels, 3), None);
+    }
+
+    #[test]
+    fn numeric_opcodes_map() {
+        assert_eq!(numeric_opcode(OpKind::Add, VALTYPE_I64, None), Some(I64_ADD));
+        assert_eq!(numeric_opcode(OpKind::Add, VALTYPE_F64, None), Some(F64_ADD));
+        assert_eq!(numeric_opcode(OpKind::UDiv, VALTYPE_I64, None), Some(I64_DIV_U));
+        assert_eq!(numeric_opcode(OpKind::Eq, VALTYPE_I64, None), Some(I64_EQ));
+    }
+}

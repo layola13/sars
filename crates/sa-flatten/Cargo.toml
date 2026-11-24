@@ -1,0 +1,10 @@
+[package]
+name = "sa-flatten"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sa-ir = { path = "../sa-ir" }
+sa-lexer = { path = "../sa-lexer" }
+sa-parser = { path = "../sa-parser" }

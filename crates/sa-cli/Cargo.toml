@@ -1,0 +1,19 @@
+[package]
+name = "sa-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sa"
+path = "src/main.rs"
+
+[dependencies]
+sa-ir = { path = "../sa-ir" }
+sa-lexer = { path = "../sa-lexer" }
+sa-parser = { path = "../sa-parser" }
+sa-flatten = { path = "../sa-flatten" }
+sa-verify = { path = "../sa-verify" }
+sa-emit-js = { path = "../sa-emit-js" }
+sa-emit-wasm = { path = "../sa-emit-wasm" }
+sa-interp = { path = "../sa-interp" }

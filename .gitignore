@@ -1,0 +1,5 @@
+/target
+*.bc
+*.wasm
+*.mjs
+*.o
