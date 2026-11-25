@@ -8,6 +8,7 @@ members = [
     "crates/sa-verify",
     "crates/sa-emit-js",
     "crates/sa-emit-wasm",
+    "crates/sa-emit-c",
     "crates/sa-interp",
     "crates/sa-cli",
 ]

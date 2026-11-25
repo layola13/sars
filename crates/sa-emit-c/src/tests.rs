@@ -1,0 +1,162 @@
+use crate::{emit_c, COptions};
+use sa_ir::{
+    Block, CallArg, CapPrefix, ConstDecl, ConstValue, Function, Instruction, InstructionKind,
+    NpmBindDecl, NpmBindShape, OpKind, Operand, ParamSpec, PrimType, Program, Signature, SourceLoc,
+    Trap,
+};
+
+fn loc() -> SourceLoc {
+    SourceLoc::unknown()
+}
+
+fn print_extern() -> sa_ir::Signature {
+    let mut sig = Signature::new("sa_print_bytes");
+    sig.params.push(ParamSpec::new("msg", PrimType::Ptr, CapPrefix::Borrow));
+    sig.params.push(ParamSpec::new("len", PrimType::U64, CapPrefix::ByValue));
+    sig
+}
+
+fn hello_program() -> Program {
+    let mut p = Program::new();
+    p.consts.push(ConstDecl::new(
+        "MSG",
+        ConstValue::Utf8("hi\n".to_string()),
+    ));
+    p.externs.push(print_extern());
+    let mut f = Function::new(Signature::new("main"), loc());
+    let mut b = Block::new("L_ENTRY", loc());
+    b.instrs.push(Instruction::new(
+        InstructionKind::Call {
+            target: "sa_print_bytes".to_string(),
+            args: vec![
+                CallArg::new(CapPrefix::Borrow, Operand::reg("MSG")),
+                CallArg::new(CapPrefix::ByValue, Operand::Int(3)),
+            ],
+        },
+        loc(),
+        "call",
+    ));
+    b.instrs.push(Instruction::new(
+        InstructionKind::Return {
+            value: Some(Operand::Int(0)),
+        },
+        loc(),
+        "return",
+    ));
+    f.blocks.push(b);
+    p.functions.push(f);
+    p
+}
+
+#[test]
+fn emits_hello_world_c() {
+    let c = emit_c(&hello_program(), &COptions::default()).unwrap();
+    assert!(c.contains("static const unsigned char sa_c0_MSG[]"));
+    assert!(c.contains("sa_print_bytes(sa_c0_MSG, (uint64_t)3);"));
+    assert!(c.contains("int main(void)"));
+    assert!(c.contains("static void sa_print_bytes(const uint8_t *p, uint64_t len)"));
+}
+
+#[test]
+fn emits_alloc_store_load_add() {
+    let mut p = Program::new();
+    let mut f = Function::new(Signature::new("main"), loc());
+    let mut b = Block::new("L_ENTRY", loc());
+    b.instrs.push(Instruction::new(
+        InstructionKind::Alloc {
+            size: Operand::Int(8),
+        },
+        loc(),
+        "alloc",
+    ).with_dest("arr"));
+    b.instrs.push(Instruction::new(
+        InstructionKind::Store {
+            addr: sa_ir::Address::new(Operand::reg("arr"), 0),
+            value: Operand::Int(3),
+        },
+        loc(),
+        "store",
+    ).with_ty(PrimType::I32));
+    b.instrs.push(Instruction::new(
+        InstructionKind::Load {
+            addr: sa_ir::Address::new(Operand::reg("arr"), 0),
+        },
+        loc(),
+        "load",
+    ).with_dest("x").with_ty(PrimType::I32));
+    b.instrs.push(Instruction::new(
+        InstructionKind::Op {
+            op: OpKind::Add,
+            args: vec![Operand::reg("x"), Operand::Int(4)],
+        },
+        loc(),
+        "add",
+    ).with_dest("y"));
+    b.instrs.push(Instruction::new(
+        InstructionKind::Return {
+            value: Some(Operand::reg("y")),
+        },
+        loc(),
+        "return",
+    ));
+    f.blocks.push(b);
+    p.functions.push(f);
+    let c = emit_c(&p, &COptions::default()).unwrap();
+    assert!(c.contains("sa_alloc((uint64_t)("));
+    assert!(c.contains("*(int32_t *)"));
+    assert!(c.contains("+ ((int32_t)4)"));
+}
+
+#[test]
+fn rejects_unsupported_extern() {
+    let mut p = Program::new();
+    let mut sig = Signature::new("puts");
+    sig.params.push(ParamSpec::new("s", PrimType::Ptr, CapPrefix::Borrow));
+    p.externs.push(sig);
+    let errs = emit_c(&p, &COptions::default()).unwrap_err();
+    assert!(errs.iter().any(|d| d.trap == Trap::ImportResolutionFailed));
+}
+
+#[test]
+fn rejects_npm_bind() {
+    let mut p = hello_program();
+    p.npm_binds.push(NpmBindDecl {
+        extern_name: "sa_print_bytes".to_string(),
+        spec: "node:os".to_string(),
+        target: "totalmem".to_string(),
+        shape: NpmBindShape::Call,
+        loc: loc(),
+    });
+    let errs = emit_c(&p, &COptions::default()).unwrap_err();
+    assert!(errs.iter().any(|d| d.trap == Trap::UnsupportedInstruction));
+}
+
+#[test]
+fn rejects_call_indirect() {
+    let mut p = hello_program();
+    if let Some(f) = p.functions.first_mut() {
+        if let Some(b) = f.blocks.first_mut() {
+            b.instrs.insert(
+                0,
+                Instruction::new(
+                    InstructionKind::CallIndirect {
+                        target: Operand::reg("fp"),
+                        args: vec![],
+                    },
+                    loc(),
+                    "call_indirect",
+                ).with_dest("v"),
+            );
+        }
+    }
+    let errs = emit_c(&p, &COptions::default()).unwrap_err();
+    assert!(errs.iter().any(|d| d.trap == Trap::UnsupportedInstruction));
+}
+
+#[test]
+fn rejects_cross_target() {
+    let mut opts = COptions::default();
+    opts.target = Some("aarch64-linux-gnu".to_string());
+    let errs = emit_c(&hello_program(), &opts).unwrap_err();
+    assert!(errs.iter().any(|d| d.trap == Trap::UnsupportedInstruction));
+}

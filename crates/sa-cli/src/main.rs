@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod json;
+mod native;
 mod pipeline;
 
 use std::process::exit;

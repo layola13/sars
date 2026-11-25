@@ -31,7 +31,18 @@ pub enum Command {
         out: Option<String>,
         entry: Option<String>,
     },
+    BuildExe {
+        file: String,
+        out: Option<String>,
+        debug: bool,
+        optimize: bool,
+        target: Option<String>,
+        entry: Option<String>,
+    },
     DumpIr {
+        file: String,
+    },
+    DumpC {
         file: String,
     },
     CompileTokens {
@@ -48,7 +59,9 @@ pub const USAGE: &str = concat!(
     "  run <file> [--trace] [--gas N]\n",
     "  build-js <file> [-o <out>] [--format esm|cjs] [-g|--no-debug] [--entry NAME]\n",
     "  build-wasm <file> [-o <out>] [--entry NAME]\n",
+    "  build-exe <file> [-o <out>] [-g|--no-debug] [-O0|-O2] [--target TRIPLE] [--entry NAME]\n",
     "  dump-ir <file>\n",
+    "  dump-c <file>                 Print generated native C source without linking\n",
     "  compile-tokens <file>\n",
     "  help | --help | --version\n"
 );
@@ -218,6 +231,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                 entry,
             })
         }
+        "build-exe" | "build" => parse_build_exe(rest, first),
         "dump-ir" => {
             let mut file = None;
             for arg in rest {
@@ -228,6 +242,18 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
             }
             Ok(Command::DumpIr {
                 file: require_file(file, "dump-ir")?,
+            })
+        }
+        "dump-c" => {
+            let mut file = None;
+            for arg in rest {
+                if arg.starts_with('-') {
+                    return Err(error(format!("unknown option: {arg}")));
+                }
+                set_file(&mut file, arg.clone())?;
+            }
+            Ok(Command::DumpC {
+                file: require_file(file, "dump-c")?,
             })
         }
         "compile-tokens" => {
@@ -244,6 +270,48 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
         }
         other => Err(error(format!("unknown command: {other}"))),
     }
+}
+
+fn parse_build_exe(rest: &[String], command: &str) -> Result<Command, CliError> {
+    let mut file = None;
+    let mut out = None;
+    let mut debug = true;
+    let mut optimize = true;
+    let mut target = None;
+    let mut entry = None;
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = rest[i].as_str();
+        i += 1;
+        match arg {
+            "-o" | "--output" => out = Some(take_value(rest, &mut i, arg)?),
+            "-g" => debug = true,
+            "--no-debug" => debug = false,
+            "-O0" => optimize = false,
+            "-O2" | "--release-small" | "--release-fast" => optimize = true,
+            "--target" => target = Some(take_value(rest, &mut i, "--target")?),
+            "--entry" => entry = Some(take_value(rest, &mut i, "--entry")?),
+            s if s.starts_with("--target=") => target = Some(inline_value(s, "--target=").unwrap()),
+            s if s.starts_with("--entry=") => entry = Some(inline_value(s, "--entry=").unwrap()),
+            "--incremental" | "--profile" | "-p" | "--package" => {
+                return Err(error(format!(
+                    "{arg} is not supported by build-exe (first increment)"
+                )));
+            }
+            s if s.starts_with('-') => {
+                return Err(error(format!("unknown option: {s}")));
+            }
+            s => set_file(&mut file, s.to_string())?,
+        }
+    }
+    Ok(Command::BuildExe {
+        file: require_file(file, command)?,
+        out,
+        debug,
+        optimize,
+        target,
+        entry,
+    })
 }
 
 fn parse_format(raw: &str) -> Result<OutputFormat, CliError> {
@@ -344,6 +412,36 @@ mod tests {
                 entry: Some("main".to_string())
             }
         );
+    }
+
+    #[test]
+    fn parses_build_exe_flags_and_alias() {
+        assert_eq!(
+            parse_args(&args(&["build-exe", "a.sa"])).unwrap(),
+            Command::BuildExe {
+                file: "a.sa".to_string(),
+                out: None,
+                debug: true,
+                optimize: true,
+                target: None,
+                entry: None
+            }
+        );
+        assert_eq!(
+            parse_args(&args(&[
+                "build", "a.sa", "-o", "a.out", "--no-debug", "-O0", "--target", "host"
+            ]))
+            .unwrap(),
+            Command::BuildExe {
+                file: "a.sa".to_string(),
+                out: Some("a.out".to_string()),
+                debug: false,
+                optimize: false,
+                target: Some("host".to_string()),
+                entry: None
+            }
+        );
+        assert!(parse_args(&args(&["build-exe", "a.sa", "--incremental"])).is_err());
     }
 
     #[test]

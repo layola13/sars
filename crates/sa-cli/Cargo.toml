@@ -16,4 +16,5 @@ sa-flatten = { path = "../sa-flatten" }
 sa-verify = { path = "../sa-verify" }
 sa-emit-js = { path = "../sa-emit-js" }
 sa-emit-wasm = { path = "../sa-emit-wasm" }
+sa-emit-c = { path = "../sa-emit-c" }
 sa-interp = { path = "../sa-interp" }

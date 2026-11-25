@@ -1,5 +1,5 @@
 use crate::cli::{Command, OutputFormat};
-use crate::{json, pipeline};
+use crate::{json, native, pipeline};
 use sa_interp::{InterpOptions, Interpreter};
 use sa_ir::Diagnostic;
 use std::io::Write;
@@ -29,7 +29,16 @@ pub fn dispatch(command: Command) -> i32 {
             entry,
         } => build_js(&file, out, format, debug, entry),
         Command::BuildWasm { file, out, entry } => build_wasm(&file, out, entry),
+        Command::BuildExe {
+            file,
+            out,
+            debug,
+            optimize,
+            target,
+            entry,
+        } => build_exe(&file, out, debug, optimize, target, entry),
         Command::DumpIr { file } => dump_ir(&file),
+        Command::DumpC { file } => dump_c(&file),
         Command::CompileTokens { file } => compile_tokens(&file),
     }
 }
@@ -191,10 +200,76 @@ fn build_wasm(file: &str, out: Option<String>, entry: Option<String>) -> i32 {
     }
 }
 
+fn build_exe(
+    file: &str,
+    out: Option<String>,
+    debug: bool,
+    optimize: bool,
+    target: Option<String>,
+    entry: Option<String>,
+) -> i32 {
+    let compilation = match pipeline::compile(file, true) {
+        Ok(c) => c,
+        Err(diags) => return fail(&diags, file, false),
+    };
+    let mut diags = Vec::new();
+    if !compilation.program.npm_binds.is_empty() {
+        diags.push(Diagnostic::new(
+            sa_ir::Trap::UnsupportedInstruction,
+            "build-exe rejects #npm_bind programs (D22): npm bindings are JS-only",
+            compilation.program.npm_binds[0].loc.clone(),
+        ));
+    }
+    if let Some(name) = &entry {
+        if name != "main" {
+            diags.push(Diagnostic::new(
+                sa_ir::Trap::UnsupportedInstruction,
+                format!("--entry {name} is not supported by build-exe (first increment); main only"),
+                sa_ir::SourceLoc::unknown(),
+            ));
+        }
+    }
+    if !diags.is_empty() {
+        return fail(&diags, file, false);
+    }
+    let opts = sa_emit_c::COptions {
+        debug,
+        optimize,
+        target,
+        heap_size: 1 << 24,
+    };
+    let source = match sa_emit_c::emit_c(&compilation.program, &opts) {
+        Ok(source) => source,
+        Err(diags) => return fail(&diags, file, false),
+    };
+    let out_path = out.unwrap_or_else(|| default_output(file, ""));
+    match native::link_executable(&source, &out_path, debug, optimize) {
+        Ok(()) => {
+            println!("{out_path}");
+            0
+        }
+        Err(diags) => fail(&diags, file, false),
+    }
+}
+
 fn dump_ir(file: &str) -> i32 {
     match pipeline::compile(file, true) {
         Ok(compilation) => {
             println!("{}", compilation.program.to_text());
+            0
+        }
+        Err(diags) => fail(&diags, file, false),
+    }
+}
+
+fn dump_c(file: &str) -> i32 {
+    let compilation = match pipeline::compile(file, true) {
+        Ok(c) => c,
+        Err(diags) => return fail(&diags, file, false),
+    };
+    match sa_emit_c::emit_c(&compilation.program, &sa_emit_c::COptions::default()) {
+        Ok(source) => {
+            print!("{source}");
             0
         }
         Err(diags) => fail(&diags, file, false),
