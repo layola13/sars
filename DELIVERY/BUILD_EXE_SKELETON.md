@@ -31,7 +31,8 @@
   - **MATCH 713**，**真不一致 0**；
   - 6 名（338/347/383/384/388/389）sci 自身 rc=1/空 stdout（已知 sci u64 有符号宽度 bug），sars rc=0 且 stdout 正确输出各自编号 → 按已知 sci bug 单列、不计战绩；
   - 23 名 sci 参考不可构建（REF_SKIP），单列。
-  - **验收名集口径（回 10700 ④）：968 名中排除 388/389**（sci 自身 u64 宽度 bug 致其参考输出为空，sars 不与 sci bug 对齐战绩）；同理单列不计的还有 338/347/383/384。计入战绩的验收名集为 968 − 6 = **962 名**。
+  - **验收名集口径（回 10700 ④ + 回 10754 ②）：六名 338/347/383/384/388/389 一并作 REF_BUG 排除**。六名均系 demo 注释明写的 sci LLVM 后端已知 bug（sci `build-exe` rc=1、stdout 为空，sars rc=0 且打印规定编号），sars 不与已知 sci bug 对齐战绩，单列不计。计入战绩的验收名集为 968 − 6 = **962 名**。
+  - 注：383/384 在 wasm 侧是 typed-width 已修的真名（计入 wasm 战绩），此处排除仅针对 build-exe 原生 C 后端对拍的 sci LLVM bug；两者是不同后端、两本账，不冲突。
 - `cargo test --workspace` 全绿（新增 sa-emit-c 6 项、cli build-exe 解析 1 项）。
 
 取证件：`build_exe_fail_before_pass_after.log`（逐名 before/after）、`build_exe_reference_compare.log`（逐名 stdout 对拍）、
