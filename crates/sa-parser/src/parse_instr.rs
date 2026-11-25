@@ -240,7 +240,7 @@ pub(crate) fn parse_instruction(
             base: Operand::parse(&join(&parts[0])),
             offset: Operand::parse(&join(&parts[1])),
         }
-    } else if first.is_ident("return") {
+    } else if first.is_ident("return") || first.is_ident("ret") {
         InstructionKind::Return {
             value: optional_operand(&work[1..]),
         }
@@ -508,6 +508,16 @@ mod tests {
         assert_eq!(
             parse("neg = fneg x as f64").kind,
             InstructionKind::Op { op: OpKind::FNeg, args: vec![Operand::reg("x")] }
+        );
+    }
+
+    #[test]
+    fn ret_is_empty_return_alias() {
+        assert_eq!(parse("ret").kind, InstructionKind::Return { value: None });
+        assert_eq!(parse("return").kind, InstructionKind::Return { value: None });
+        assert_eq!(
+            parse("ret 0").kind,
+            InstructionKind::Return { value: Some(Operand::Int(0)) }
         );
     }
 

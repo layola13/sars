@@ -461,19 +461,24 @@ fn handle_call(
             if index < sig.params.len() {
                 let expected = sig.params[index].cap;
                 if expected != arg.cap {
-                    ctx.report(
-                        Trap::CapabilityMismatch,
-                        format!(
-                            "argument {} of '@{target}' expects {} capability, found {}",
-                            index + 1,
-                            Capability::from_prefix(expected).name(),
-                            Capability::from_prefix(arg.cap).name()
-                        ),
-                        loc,
-                        arg.value.as_reg(),
-                        None,
-                        false,
-                    );
+                    let view_coercion = expected == CapPrefix::ByValue
+                        && sig.params[index].ty == PrimType::Ptr
+                        && matches!(arg.cap, CapPrefix::Borrow | CapPrefix::Raw);
+                    if !view_coercion {
+                        ctx.report(
+                            Trap::CapabilityMismatch,
+                            format!(
+                                "argument {} of '@{target}' expects {} capability, found {}",
+                                index + 1,
+                                Capability::from_prefix(expected).name(),
+                                Capability::from_prefix(arg.cap).name()
+                            ),
+                            loc,
+                            arg.value.as_reg(),
+                            None,
+                            false,
+                        );
+                    }
                 }
             } else if !sig.is_variadic {
                 ctx.report(

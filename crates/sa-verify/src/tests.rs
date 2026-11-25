@@ -628,3 +628,80 @@ fn verify_function_checks_only_one_function() {
     assert_eq!(report.functions_checked, 1);
     assert_eq!(report.instructions_checked, 1);
 }
+
+#[test]
+fn borrow_arg_to_by_value_ptr_param_is_accepted() {
+    let mut callee = function(
+        "log_emit",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(InstructionKind::Release { reg: "msg".into() }, 2),
+                ins(InstructionKind::Return { value: None }, 3),
+            ],
+            1,
+        )],
+    );
+    callee
+        .sig
+        .params
+        .push(ParamSpec::new("msg", PrimType::Ptr, CapPrefix::ByValue));
+    let mut caller = function(
+        "consumer",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(
+                    InstructionKind::Call {
+                        target: "log_emit".into(),
+                        args: vec![sa_ir::CallArg::new(CapPrefix::Borrow, Operand::reg("MSG"))],
+                    },
+                    2,
+                ),
+                ins(InstructionKind::Return { value: None }, 3),
+            ],
+            1,
+        )],
+    );
+    caller
+        .sig
+        .params
+        .push(ParamSpec::new("MSG", PrimType::Ptr, CapPrefix::Borrow));
+    verify(&program(vec![callee, caller]), &VerifyOptions::default())
+        .expect("borrow arg to by-value ptr param mirrors sci callPrefixMatchesParam (257)");
+}
+
+#[test]
+fn borrow_arg_to_by_value_scalar_param_is_rejected() {
+    let mut callee = function(
+        "link_target",
+        vec![block("L_entry", vec![ins(InstructionKind::Return { value: None }, 2)], 1)],
+    );
+    callee
+        .sig
+        .params
+        .push(ParamSpec::new("slot", PrimType::I32, CapPrefix::ByValue));
+    let mut caller = function(
+        "consumer",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(
+                    InstructionKind::Call {
+                        target: "link_target".into(),
+                        args: vec![sa_ir::CallArg::new(CapPrefix::Borrow, Operand::reg("slot"))],
+                    },
+                    2,
+                ),
+                ins(InstructionKind::Return { value: None }, 3),
+            ],
+            1,
+        )],
+    );
+    caller
+        .sig
+        .params
+        .push(ParamSpec::new("slot", PrimType::Ptr, CapPrefix::Borrow));
+    let errors = verify(&program(vec![callee, caller]), &VerifyOptions::default()).unwrap_err();
+    assert!(has_trap(&errors, Trap::CapabilityMismatch), "{errors:?}");
+}
