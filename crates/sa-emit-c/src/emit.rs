@@ -1,7 +1,7 @@
 use crate::runtime;
 use sa_ir::{
-    ConstValue, Diagnostic, Function, Instruction, InstructionKind, OpKind, Operand, PrimType,
-    Program, Signature, SourceLoc, Trap,
+    AtomicOrdering, AtomicRmwOp, ConstValue, Diagnostic, Function, Instruction, InstructionKind,
+    OpKind, Operand, PrimType, Program, Signature, SourceLoc, Trap,
 };
 use std::collections::HashMap;
 
@@ -71,6 +71,32 @@ fn signed_ty(ty: PrimType) -> PrimType {
         PrimType::U32 => PrimType::I32,
         PrimType::U64 => PrimType::I64,
         other => other,
+    }
+}
+
+fn atomic_order(order: AtomicOrdering) -> &'static str {
+    match order {
+        AtomicOrdering::Relaxed => "__ATOMIC_RELAXED",
+        AtomicOrdering::Acquire => "__ATOMIC_ACQUIRE",
+        AtomicOrdering::Release => "__ATOMIC_RELEASE",
+        AtomicOrdering::AcqRel => "__ATOMIC_ACQ_REL",
+        AtomicOrdering::SeqCst => "__ATOMIC_SEQ_CST",
+    }
+}
+
+fn atomic_load_order(order: AtomicOrdering) -> &'static str {
+    match order {
+        AtomicOrdering::Relaxed => "__ATOMIC_RELAXED",
+        AtomicOrdering::Acquire => "__ATOMIC_ACQUIRE",
+        _ => "__ATOMIC_SEQ_CST",
+    }
+}
+
+fn atomic_store_order(order: AtomicOrdering) -> &'static str {
+    match order {
+        AtomicOrdering::Relaxed => "__ATOMIC_RELAXED",
+        AtomicOrdering::Release => "__ATOMIC_RELEASE",
+        _ => "__ATOMIC_SEQ_CST",
     }
 }
 
@@ -641,12 +667,124 @@ fn emit_instruction(
             let o = ctx.expr(offset, PrimType::U64, diags);
             assign(out, format!("((uint8_t *)({b}) + ({o}))"));
         }
-        InstructionKind::AtomicLoad { .. }
-        | InstructionKind::AtomicStore { .. }
-        | InstructionKind::Cmpxchg { .. }
-        | InstructionKind::AtomicRmw { .. }
-        | InstructionKind::Fence { .. } => {
-            unsupported(ctx, diags, &ins.loc, "atomics / fences");
+        InstructionKind::AtomicLoad { addr, order } => {
+            let ty = ins.ty.unwrap_or(PrimType::I64);
+            let cty = c_type(ty);
+            let p = ctx.addr_expr(addr, diags);
+            assign(
+                out,
+                format!(
+                    "__atomic_load_n(({cty} *)({p}), {})",
+                    atomic_load_order(*order)
+                ),
+            );
+        }
+        InstructionKind::AtomicStore {
+            addr,
+            value,
+            order,
+        } => {
+            let ty = ins
+                .ty
+                .unwrap_or_else(|| ctx.type_of_operand(Some(value)).unwrap_or(PrimType::I64));
+            let cty = c_type(ty);
+            let p = ctx.addr_expr(addr, diags);
+            let v = ctx.expr(value, ty, diags);
+            out.push_str(&format!(
+                "  __atomic_store_n(({cty} *)({p}), ({cty})({v}), {});\n",
+                atomic_store_order(*order)
+            ));
+        }
+        InstructionKind::Cmpxchg {
+            addr,
+            expected,
+            replacement,
+            order,
+        } => {
+            let ty = ins.ty.unwrap_or(PrimType::I64);
+            let cty = c_type(ty);
+            let p = ctx.addr_expr(addr, diags);
+            let e = ctx.expr(expected, ty, diags);
+            let r = ctx.expr(replacement, ty, diags);
+            out.push_str("  {\n");
+            out.push_str(&format!("    {cty} sa_expected = ({cty})({e});\n"));
+            out.push_str(&format!(
+                "    int sa_ok = __atomic_compare_exchange_n(({cty} *)({p}), &sa_expected, ({cty})({r}), 0, {}, {});\n",
+                atomic_order(*order),
+                atomic_load_order(*order)
+            ));
+            match dest.as_deref() {
+                Some(d) => out.push_str(&format!("    {d} = sa_expected;\n")),
+                None => out.push_str("    (void)sa_expected;\n"),
+            }
+            if let Some(ok) = ins.extra_dests.first() {
+                let okvar = ctx
+                    .regs
+                    .get(ok.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| format!("r_{}", ident(ok)));
+                out.push_str(&format!("    {okvar} = sa_ok;\n"));
+            } else {
+                out.push_str("    (void)sa_ok;\n");
+            }
+            out.push_str("  }\n");
+        }
+        InstructionKind::AtomicRmw {
+            op,
+            addr,
+            value,
+            order,
+        } => {
+            let ty = ins
+                .ty
+                .unwrap_or_else(|| ctx.type_of_operand(Some(value)).unwrap_or(PrimType::I64));
+            let cty = c_type(ty);
+            let p = ctx.addr_expr(addr, diags);
+            let v = ctx.expr(value, ty, diags);
+            let ord = atomic_order(*order);
+            let builtin = match op {
+                AtomicRmwOp::Add => Some("__atomic_fetch_add"),
+                AtomicRmwOp::Sub => Some("__atomic_fetch_sub"),
+                AtomicRmwOp::And => Some("__atomic_fetch_and"),
+                AtomicRmwOp::Or => Some("__atomic_fetch_or"),
+                AtomicRmwOp::Xor => Some("__atomic_fetch_xor"),
+                AtomicRmwOp::Xchg => Some("__atomic_exchange_n"),
+                AtomicRmwOp::Umin | AtomicRmwOp::Umax | AtomicRmwOp::Smin | AtomicRmwOp::Smax => {
+                    None
+                }
+            };
+            if let Some(builtin) = builtin {
+                assign(
+                    out,
+                    format!("{builtin}(({cty} *)({p}), ({cty})({v}), {ord})"),
+                );
+            } else {
+                let cmp = match op {
+                    AtomicRmwOp::Umin | AtomicRmwOp::Smin => "<",
+                    _ => ">",
+                };
+                out.push_str("  {\n");
+                out.push_str(&format!("    {cty} sa_cmp_value = ({cty})({v});\n"));
+                out.push_str(&format!(
+                    "    {cty} sa_cmp_old = __atomic_load_n(({cty} *)({p}), {ord});\n"
+                ));
+                out.push_str(&format!("    {cty} sa_cmp_new;\n"));
+                out.push_str("    do {\n");
+                out.push_str(&format!(
+                    "      sa_cmp_new = (sa_cmp_old {cmp} sa_cmp_value) ? sa_cmp_old : sa_cmp_value;\n"
+                ));
+                out.push_str(&format!(
+                    "    }} while (!__atomic_compare_exchange_n(({cty} *)({p}), &sa_cmp_old, sa_cmp_new, 0, {ord}, __ATOMIC_RELAXED));\n"
+                ));
+                match dest.as_deref() {
+                    Some(d) => out.push_str(&format!("    {d} = sa_cmp_old;\n")),
+                    None => out.push_str("    (void)sa_cmp_old;\n"),
+                }
+                out.push_str("  }\n");
+            }
+        }
+        InstructionKind::Fence { order } => {
+            out.push_str(&format!("  __atomic_thread_fence({});\n", atomic_order(*order)));
         }
         InstructionKind::Try { .. } => {
             unsupported(ctx, diags, &ins.loc, "fallible `?` unpacking");
