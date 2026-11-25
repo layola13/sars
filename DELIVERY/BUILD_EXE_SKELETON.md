@@ -31,6 +31,7 @@
   - **MATCH 713**，**真不一致 0**；
   - 6 名（338/347/383/384/388/389）sci 自身 rc=1/空 stdout（已知 sci u64 有符号宽度 bug），sars rc=0 且 stdout 正确输出各自编号 → 按已知 sci bug 单列、不计战绩；
   - 23 名 sci 参考不可构建（REF_SKIP），单列。
+  - **验收名集口径（回 10700 ④）：968 名中排除 388/389**（sci 自身 u64 宽度 bug 致其参考输出为空，sars 不与 sci bug 对齐战绩）；同理单列不计的还有 338/347/383/384。计入战绩的验收名集为 968 − 6 = **962 名**。
 - `cargo test --workspace` 全绿（新增 sa-emit-c 6 项、cli build-exe 解析 1 项）。
 
 取证件：`build_exe_fail_before_pass_after.log`（逐名 before/after）、`build_exe_reference_compare.log`（逐名 stdout 对拍）、
