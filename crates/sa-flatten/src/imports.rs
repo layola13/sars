@@ -1,15 +1,35 @@
 use crate::walk::rewrite_operands;
-use sa_ir::{InstructionKind, Operand, Program};
+use sa_ir::{Diagnostic, InstructionKind, Operand, Program, Trap};
 use std::collections::{HashMap, HashSet};
 
-pub(crate) fn merge(dst: &mut Program, src: Program, path: &str) {
+fn push_duplicate(diags: &mut Vec<Diagnostic>, diagnostic: Diagnostic) {
+    if !diags.contains(&diagnostic) {
+        diags.push(diagnostic);
+    }
+}
+
+pub(crate) fn merge(dst: &mut Program, src: Program, path: &str, diags: &mut Vec<Diagnostic>) {
     for constant in src.consts {
         if !dst.consts.iter().any(|existing| existing.name == constant.name) {
             dst.consts.push(constant);
         }
     }
     for definition in src.defs {
-        dst.defs.push(definition);
+        match dst.defs.iter().find(|existing| existing.name == definition.name) {
+            Some(existing) if existing.value != definition.value => {
+                push_duplicate(
+                    diags,
+                    Diagnostic::new(
+                        Trap::DuplicateDef,
+                        "duplicate definition detected during flattening",
+                        definition.loc.clone(),
+                    )
+                    .with_hint(format!("conflicting definition '{}'", definition.name)),
+                );
+            }
+            Some(_) => {}
+            None => dst.defs.push(definition),
+        }
     }
     for extern_sig in src.externs {
         if !dst.externs.iter().any(|existing| existing.name == extern_sig.name) {
@@ -179,7 +199,7 @@ mod tests {
         src.functions
             .push(function("bar", "other", InstructionKind::Nop));
 
-        merge(&mut dst, src, "lib.sa");
+        merge(&mut dst, src, "lib.sa", &mut Vec::new());
 
         let const_names: Vec<&str> = dst.consts.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(const_names, vec!["A", "B"]);
@@ -209,7 +229,7 @@ mod tests {
                 else_label: "exit".to_string(),
             },
         ));
-        merge(&mut dst, src, "sub/bar.sa");
+        merge(&mut dst, src, "sub/bar.sa", &mut Vec::new());
 
         let imported = &dst.functions[1];
         assert_eq!(imported.blocks[0].label, "bar_entry");
@@ -238,7 +258,7 @@ mod tests {
         let mut src = Program::new();
         src.functions
             .push(function("bar", "entry", InstructionKind::Nop));
-        merge(&mut dst, src, "bar.sa");
+        merge(&mut dst, src, "bar.sa", &mut Vec::new());
         assert_eq!(dst.functions[1].blocks[0].label, "entry");
     }
 

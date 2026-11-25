@@ -31,7 +31,14 @@ struct Context<'a> {
     resolver: &'a dyn ImportResolver,
     opts: &'a FlattenOptions,
     visited: HashSet<String>,
+    stack: Vec<String>,
     macros: HashMap<String, MacroDef>,
+}
+
+fn canonical_key(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .map(|resolved| resolved.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string())
 }
 
 fn source_file(program: &Program) -> String {
@@ -69,20 +76,40 @@ fn flatten_rec(
 
     for import in &program.imports {
         let key = import.path.clone();
-        if ctx.visited.contains(&key) {
-            continue;
-        }
-        let content = match ctx.resolver.resolve(&import.path, from) {
-            Some(content) => content,
+        let (content, nested_from) = match ctx
+            .resolver
+            .resolve_child(&import.path, from, depth == 0)
+        {
+            Some(resolved) => resolved,
             None => {
-                diags.push(Diagnostic::new(
-                    Trap::ImportResolutionFailed,
-                    format!("cannot resolve import '{}'", import.path),
-                    import.loc.clone(),
-                ));
+                diags.push(
+                    Diagnostic::new(
+                        Trap::ImportResolutionFailed,
+                        "import path could not be resolved",
+                        import.loc.clone(),
+                    )
+                    .with_hint(
+                        "check the import path, package identity, local vendor tree, and package cache",
+                    ),
+                );
                 continue;
             }
         };
+        let nested_key = canonical_key(&nested_from);
+        if ctx.stack.iter().any(|item| item == &nested_key) {
+            diags.push(
+                Diagnostic::new(
+                    Trap::ForbiddenSyntax,
+                    "import cycle detected during flattening",
+                    import.loc.clone(),
+                )
+                .with_hint("break the cycle in imported files or inline the shared definitions"),
+            );
+            continue;
+        }
+        if ctx.visited.contains(&key) {
+            continue;
+        }
         if depth >= ctx.opts.max_depth {
             diags.push(Diagnostic::new(
                 Trap::MacroRecursionLimit,
@@ -92,10 +119,7 @@ fn flatten_rec(
             continue;
         }
         ctx.visited.insert(key);
-        let nested_from = ctx
-            .resolver
-            .resolve_path(&import.path, from)
-            .unwrap_or_else(|| import.path.clone());
+        ctx.stack.push(nested_key);
         macros::collect_macros(&content, &mut ctx.macros);
         let content = if ctx.opts.expand_macros {
             macros::expand_text(&content, &ctx.macros, 0, ctx.opts.max_depth, diags)
@@ -106,11 +130,13 @@ fn flatten_rec(
             Ok(parsed) => parsed,
             Err(mut parse_diags) => {
                 diags.append(&mut parse_diags);
+                ctx.stack.pop();
                 continue;
             }
         };
         let nested = flatten_rec(&parsed, &nested_from, depth + 1, ctx, diags);
-        imports::merge(&mut merged, nested, &import.path);
+        ctx.stack.pop();
+        imports::merge(&mut merged, nested, &import.path, diags);
     }
 
     if ctx.opts.expand_macros {
@@ -128,10 +154,12 @@ pub fn flatten(
         resolver,
         opts,
         visited: HashSet::new(),
+        stack: Vec::new(),
         macros: HashMap::new(),
     };
     let mut diags = Vec::new();
     let from = source_file(program);
+    ctx.stack.push(canonical_key(&from));
     let mut result = flatten_rec(program, &from, 0, &mut ctx, &mut diags);
     if opts.expand_macros {
         result.defs.clear();
@@ -208,9 +236,11 @@ pub fn flatten_source(
         resolver,
         opts,
         visited: HashSet::new(),
+        stack: Vec::new(),
         macros: HashMap::new(),
     };
     let mut diags = Vec::new();
+    ctx.stack.push(canonical_key(file));
     macros::collect_macros(src, &mut ctx.macros);
     if opts.expand_macros {
         let mut seen = HashSet::new();
@@ -257,6 +287,92 @@ mod tests {
         fn resolve(&self, path: &str, _from: &str) -> Option<String> {
             self.files.get(path).cloned()
         }
+    }
+
+    #[derive(Default)]
+    struct NestedResolver {
+        files: HashMap<String, (String, String)>,
+    }
+
+    impl NestedResolver {
+        fn insert(&mut self, path: &str, resolved: &str, source: &str) {
+            self.files
+                .insert(path.to_string(), (source.to_string(), resolved.to_string()));
+        }
+    }
+
+    impl ImportResolver for NestedResolver {
+        fn resolve(&self, path: &str, _from: &str) -> Option<String> {
+            self.files.get(path).map(|(source, _)| source.clone())
+        }
+
+        fn resolve_child(
+            &self,
+            path: &str,
+            _from: &str,
+            _allow_roots: bool,
+        ) -> Option<(String, String)> {
+            self.files.get(path).cloned()
+        }
+    }
+
+    fn diag_for(diags: &[Diagnostic], trap: Trap) -> &Diagnostic {
+        diags
+            .iter()
+            .find(|diag| diag.trap == trap)
+            .unwrap_or_else(|| panic!("missing {trap:?} in {diags:?}"))
+    }
+
+    #[test]
+    fn flatten_rejects_import_cycles() {
+        let mut resolver = NestedResolver::default();
+        resolver.insert(
+            "a.sa",
+            "a.sa",
+            "@import \"b.sa\"\n@fa() -> i32:\nL_ENTRY:\n    return 0\n",
+        );
+        resolver.insert(
+            "b.sa",
+            "b.sa",
+            "@import \"a.sa\"\n@fb() -> i32:\nL_ENTRY:\n    return 0\n",
+        );
+        let src = "@import \"a.sa\"\n@main() -> i32:\nL_ENTRY:\n    return 0\n";
+        let diags = flatten_source(src, "main.sa", &resolver, &FlattenOptions::default())
+            .expect_err("cycle must be rejected");
+        let diag = diag_for(&diags, Trap::ForbiddenSyntax);
+        assert_eq!(diag.message, "import cycle detected during flattening");
+        assert_eq!(
+            diag.hint.as_deref(),
+            Some("break the cycle in imported files or inline the shared definitions")
+        );
+    }
+
+    #[test]
+    fn flatten_rejects_conflicting_definitions() {
+        let mut resolver = NestedResolver::default();
+        resolver.insert("v1.sal", "v1.sal", "#def VERSION = 1\n");
+        resolver.insert("v2.sal", "v2.sal", "#def VERSION = 2\n");
+        let src = "@import \"v1.sal\"\n@import \"v2.sal\"\n@main() -> i32:\nL_ENTRY:\n    return 0\n";
+        let diags = flatten_source(src, "main.sa", &resolver, &FlattenOptions::default())
+            .expect_err("conflicting definitions must be rejected");
+        let diag = diag_for(&diags, Trap::DuplicateDef);
+        assert_eq!(diag.message, "duplicate definition detected during flattening");
+        assert_eq!(diag.hint.as_deref(), Some("conflicting definition 'VERSION'"));
+    }
+
+    #[test]
+    fn flatten_rejects_unresolved_nested_import() {
+        let mut resolver = NestedResolver::default();
+        resolver.insert(
+            "a.sa",
+            "a.sa",
+            "@import \"west/b.sa\"\n@fa() -> i32:\nL_ENTRY:\n    return 0\n",
+        );
+        let src = "@import \"a.sa\"\n@main() -> i32:\nL_ENTRY:\n    return 0\n";
+        let diags = flatten_source(src, "main.sa", &resolver, &FlattenOptions::default())
+            .expect_err("nested unresolved import must be rejected");
+        let diag = diag_for(&diags, Trap::ImportResolutionFailed);
+        assert_eq!(diag.message, "import path could not be resolved");
     }
 
     fn def(name: &str, value: &str) -> DefDecl {
