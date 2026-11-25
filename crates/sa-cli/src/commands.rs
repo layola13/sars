@@ -191,6 +191,14 @@ fn build_wasm(file: &str, out: Option<String>, entry: Option<String>) -> i32 {
         Ok(c) => c,
         Err(diags) => return fail(&diags, file, false),
     };
+    if !compilation.program.npm_binds.is_empty() {
+        let diags = vec![Diagnostic::new(
+            sa_ir::Trap::UnsupportedInstruction,
+            "build-wasm rejects #npm_bind programs (D22): npm bindings are JS-only",
+            compilation.program.npm_binds[0].loc.clone(),
+        )];
+        return fail(&diags, file, false);
+    }
     match sa_emit_wasm::emit_wasm(&compilation.program, &sa_emit_wasm::WasmOptions::default()) {
         Ok(bytes) => write_output(
             &out.unwrap_or_else(|| default_output(file, ".wasm")),
@@ -329,5 +337,28 @@ mod tests {
     fn missing_file_reports_failure() {
         let cmd = parse_args(&args(&["check", "/nonexistent/file.sa"])).unwrap();
         assert_eq!(dispatch(cmd), 1);
+    }
+
+    #[test]
+    fn build_wasm_rejects_npm_bind() {
+        let path = std::env::temp_dir().join(format!("sars_npm_bind_{}.sa", std::process::id()));
+        let out = path.with_extension("wasm");
+        let _ = std::fs::remove_file(&out);
+        let source = "@extern npm_totalmem() -> u64\n\
+                      #npm_bind npm_totalmem \"node:os#totalmem\"\n\
+                      @main() -> i32:\n\
+                      L_ENTRY:\n\
+                          return 0\n";
+        std::fs::write(&path, source).unwrap();
+        let cmd = parse_args(&args(&[
+            "build-wasm",
+            path.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ]))
+        .unwrap();
+        assert_eq!(dispatch(cmd), 1);
+        assert!(!out.exists());
+        let _ = std::fs::remove_file(&path);
     }
 }
