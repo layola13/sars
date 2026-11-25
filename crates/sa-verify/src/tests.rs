@@ -498,6 +498,46 @@ fn plain_assignment_of_param_keeps_source_usable() {
 }
 
 #[test]
+fn live_borrow_param_in_indirect_dispatch_is_a_leak() {
+    let mut source = function(
+        "dispatch",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(
+                    InstructionKind::CallIndirect {
+                        target: Operand::Symbol("vt".into()),
+                        args: vec![],
+                    },
+                    2,
+                ),
+                ins(InstructionKind::Return { value: None }, 3),
+            ],
+            1,
+        )],
+    );
+    source
+        .sig
+        .params
+        .push(ParamSpec::new("slot", PrimType::Ptr, CapPrefix::Borrow));
+    let errors = verify(&program(vec![source]), &VerifyOptions::default()).unwrap_err();
+    assert!(has_trap(&errors, Trap::MemoryLeak), "{errors:?}");
+}
+
+#[test]
+fn live_borrow_param_without_indirect_dispatch_is_not_a_leak() {
+    let mut source = function(
+        "reads",
+        vec![block("L_entry", vec![ins(InstructionKind::Return { value: None }, 2)], 1)],
+    );
+    source
+        .sig
+        .params
+        .push(ParamSpec::new("slot", PrimType::Ptr, CapPrefix::Borrow));
+    verify(&program(vec![source]), &VerifyOptions::default()).expect("borrow param is not owned");
+}
+
+#[test]
 fn verify_function_checks_only_one_function() {
     let main = function(
         "main",

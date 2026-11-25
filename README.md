@@ -31,8 +31,8 @@ cargo build --release
 
 - `cargo test --workspace`: all unit tests green (Rust stable toolchain
   installed via rustup; use `export PATH=$HOME/.cargo/bin:$PATH`).
-- 967/970 `sci/demos/rosetta/*/main.sa` files pass `sa check`; the remaining
-  three (243, 257, 335) also fail upstream `sci`'s own `sa check`.
+- 966/970 `sci/demos/rosetta/*/main.sa` files pass `sa check`; the remaining
+  four (243, 253, 257, 335) also fail upstream `sci`'s own `sa check`.
   `[MACRO]` / `EXPAND` bodies, multi-destination `cmpxchg`, vtable and
   `struct`/`hex` constants, `#npm_bind` directives, `@target` source regions,
   two-target `br_null`, address-based `take`, and import-relative resolution

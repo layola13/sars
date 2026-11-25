@@ -508,12 +508,31 @@ fn check_leaks(ctx: &mut RuleCtx, state: &FnState, loc: &SourceLoc) {
     if !ctx.opts.check_leaks {
         return;
     }
+    let indirect_dispatch = ctx
+        .program
+        .functions
+        .iter()
+        .find(|function| function.name() == ctx.func_name)
+        .map(|function| {
+            function
+                .all_instructions()
+                .iter()
+                .any(|instruction| matches!(instruction.kind, InstructionKind::CallIndirect { .. }))
+        })
+        .unwrap_or(false);
     let mut leaked: Vec<String> = state
         .regs
         .iter()
         .filter(|(name, reg_state)| {
-            matches!(reg_state, RegState::Owned { kind: RegKind::Alloc })
-                && !state.escaped.contains(*name)
+            if state.escaped.contains(*name) {
+                return false;
+            }
+            if matches!(reg_state, RegState::Owned { kind: RegKind::Alloc }) {
+                return true;
+            }
+            indirect_dispatch
+                && state.borrow_params.contains(*name)
+                && !matches!(reg_state, RegState::Moved | RegState::Released)
         })
         .map(|(name, _)| name.clone())
         .collect();
