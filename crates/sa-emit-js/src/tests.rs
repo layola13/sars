@@ -207,6 +207,19 @@ fn native_instruction_is_rejected() {
 }
 
 #[test]
+fn empty_inline_asm_is_a_no_op() {
+    let p = program(vec![function("main", vec![block("entry", vec![
+        ins(InstructionKind::Native {
+            text: "call void asm sideeffect \"\", \"\" ()".to_string(),
+        }),
+        ins(InstructionKind::Return { value: Some(Operand::Int(0)) }),
+    ])])]);
+    let js = emit_js(&p, &JsOptions::default()).unwrap();
+    assert!(!js.contains("unsupported native"), "{}", &js);
+    node_check(&js, true);
+}
+
+#[test]
 fn utf8_const_allocates_memory() {
     let mut p = program(vec![function("main", vec![block("entry", vec![
         ins(InstructionKind::Return { value: Some(Operand::Int(0)) }),

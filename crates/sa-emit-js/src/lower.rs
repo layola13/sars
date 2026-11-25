@@ -460,13 +460,16 @@ fn lower_instr(
         InstructionKind::VaEnd => {
             buf.push_indent(indent, "SA_VA = [];");
         }
-        InstructionKind::Native { .. } => {
-            return Err(diagnostic(
-                Trap::UnsupportedInstruction,
-                "native instruction is not supported by the JS backend",
-                ins,
-                &func,
-            ));
+        InstructionKind::Native { text } => {
+            if text.trim().contains("asm sideeffect \"\"") {
+            } else {
+                return Err(diagnostic(
+                    Trap::UnsupportedInstruction,
+                    "native instruction is not supported by the JS backend",
+                    ins,
+                    &func,
+                ));
+            }
         }
         InstructionKind::Nop => {}
     }
