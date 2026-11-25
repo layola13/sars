@@ -324,29 +324,203 @@ fn memarg(out: &mut Vec<u8>, align: u32, offset: i64) {
     put_uleb(out, offset as u64);
 }
 
-fn branch_depth(current: usize, target: &str, labels: &[String], n: usize) -> Option<u32> {
-    if target.is_empty() || target == "exit" {
-        return Some((n - current) as u32);
+#[derive(Clone, Copy)]
+enum ConstructKind {
+    Loop,
+    Block,
+}
+
+#[derive(Clone)]
+enum RegionItem {
+    Block(usize),
+    Loop(usize, usize),
+}
+
+impl RegionItem {
+    fn first_block(&self) -> usize {
+        match self {
+            RegionItem::Block(i) | RegionItem::Loop(i, _) => *i,
+        }
     }
-    let j = labels.iter().position(|l| l == target)?;
-    if j == 0 {
-        Some((n - 1 - current) as u32)
-    } else if j > current {
-        Some((j - current - 1) as u32)
-    } else {
-        None
+    fn last_block(&self) -> usize {
+        match self {
+            RegionItem::Block(i) => *i,
+            RegionItem::Loop(_, end) => *end,
+        }
     }
+}
+
+struct ControlFlow {
+    exit_construct: usize,
+    loop_construct: HashMap<usize, usize>,
+    forward_target: HashMap<usize, usize>,
+    loop_range: HashMap<usize, usize>,
+    stacks: Vec<Vec<usize>>,
+    opens: Vec<Vec<ConstructKind>>,
+    closes: Vec<usize>,
+    next_construct: usize,
+}
+
+impl ControlFlow {
+    fn new_construct(&mut self) -> usize {
+        let id = self.next_construct;
+        self.next_construct += 1;
+        id
+    }
+
+    fn depth(&self, current: usize, target: &str, labels: &[String]) -> Option<u32> {
+        let desired = if target.is_empty() || target == "exit" {
+            self.exit_construct
+        } else {
+            let j = labels.iter().position(|l| l == target)?;
+            if self
+                .loop_range
+                .get(&j)
+                .map(|&end| j <= current && current <= end)
+                .unwrap_or(false)
+            {
+                *self.loop_construct.get(&j)?
+            } else {
+                *self.forward_target.get(&j)?
+            }
+        };
+        self.stacks[current]
+            .iter()
+            .position(|&id| id == desired)
+            .map(|p| p as u32)
+    }
+}
+
+fn build_items(lo: usize, hi: usize, ranges: &HashMap<usize, usize>) -> Vec<RegionItem> {
+    let mut items = Vec::new();
+    let mut i = lo;
+    while i <= hi {
+        if let Some(&end) = ranges.get(&i) {
+            let end = end.min(hi);
+            items.push(RegionItem::Loop(i, end));
+            i = end + 1;
+        } else {
+            items.push(RegionItem::Block(i));
+            i += 1;
+        }
+    }
+    items
+}
+
+fn plan_region(
+    items: &[RegionItem],
+    region_header: usize,
+    ranges: &HashMap<usize, usize>,
+    enter_construct: usize,
+    cf: &mut ControlFlow,
+    stack: &mut Vec<usize>,
+) {
+    let loop_id = cf.new_construct();
+    cf.loop_construct.insert(region_header, loop_id);
+    cf.forward_target.insert(region_header, enter_construct);
+    let first = items[0].first_block();
+    cf.opens[first].push(ConstructKind::Loop);
+    stack.insert(0, loop_id);
+
+    let k = items.len();
+    let mut block_ids: HashMap<usize, usize> = HashMap::new();
+    for t in (1..k).rev() {
+        let id = cf.new_construct();
+        block_ids.insert(t, id);
+        cf.forward_target.insert(items[t].first_block(), id);
+        cf.opens[first].push(ConstructKind::Block);
+        stack.insert(0, id);
+    }
+
+    for (t, item) in items.iter().enumerate() {
+        match item {
+            RegionItem::Block(i) => cf.stacks[*i] = stack.clone(),
+            RegionItem::Loop(h, end) => {
+                let mut children = vec![RegionItem::Block(*h)];
+                if *h + 1 <= *end {
+                    children.extend(build_items(*h + 1, *end, ranges));
+                }
+                let enter = if t > 0 { block_ids[&t] } else { loop_id };
+                plan_region(&children, *h, ranges, enter, cf, stack);
+            }
+        }
+        if let Some(&id) = block_ids.get(&(t + 1)) {
+            let pos = stack.iter().position(|&x| x == id).expect("open construct");
+            stack.remove(pos);
+            cf.closes[items[t].last_block()] += 1;
+        }
+    }
+    let pos = stack
+        .iter()
+        .position(|&x| x == loop_id)
+        .expect("open loop construct");
+    stack.remove(pos);
+    cf.closes[items[k - 1].last_block()] += 1;
+}
+
+fn build_control_flow(func: &Function, labels: &[String]) -> ControlFlow {
+    let n = func.blocks.len();
+    let mut ranges: HashMap<usize, usize> = HashMap::new();
+    for (i, block) in func.blocks.iter().enumerate() {
+        for ins in &block.instrs {
+            let targets: Vec<&str> = match &ins.kind {
+                InstructionKind::Jmp { target } => vec![target],
+                InstructionKind::Br {
+                    then_label,
+                    else_label,
+                    ..
+                } => vec![then_label, else_label],
+                InstructionKind::BrNull { target, .. } => vec![target],
+                _ => Vec::new(),
+            };
+            for target in targets {
+                if let Some(j) = labels.iter().position(|l| l == target) {
+                    if j < i {
+                        ranges
+                            .entry(j)
+                            .and_modify(|e| *e = (*e).max(i))
+                            .or_insert(i);
+                    }
+                }
+            }
+        }
+    }
+    let mut headers: Vec<usize> = ranges.keys().copied().collect();
+    headers.sort_unstable();
+    let mut prev = 0usize;
+    for h in headers {
+        let end = ranges.get_mut(&h).expect("header range");
+        *end = (*end).max(prev);
+        prev = *end;
+    }
+
+    let mut cf = ControlFlow {
+        exit_construct: 0,
+        loop_construct: HashMap::new(),
+        forward_target: HashMap::new(),
+        loop_range: ranges.clone(),
+        stacks: vec![Vec::new(); n],
+        opens: vec![Vec::new(); n],
+        closes: vec![0; n],
+        next_construct: 1,
+    };
+    let mut stack = vec![cf.exit_construct];
+    if n > 0 {
+        let items = build_items(0, n - 1, &ranges);
+        plan_region(&items, 0, &ranges, cf.exit_construct, &mut cf, &mut stack);
+    }
+    cf
 }
 
 fn emit_branch(
     out: &mut Vec<u8>,
     target: &str,
     labels: &[String],
+    cf: &ControlFlow,
     current: usize,
-    n: usize,
     conditional: bool,
 ) {
-    match branch_depth(current, target, labels, n) {
+    match cf.depth(current, target, labels) {
         Some(depth) => {
             put_u8(out, if conditional { BR_IF } else { BR });
             put_uleb(out, depth as u64);
@@ -597,8 +771,8 @@ fn lower_instruction(
     func_index: &HashMap<String, u32>,
     types: &[Vec<u8>],
     labels: &[String],
+    cf: &ControlFlow,
     current: usize,
-    n: usize,
     program: &Program,
     function: &str,
     ret_storage: u8,
@@ -726,7 +900,7 @@ fn lower_instruction(
             store_or_drop(out, ins, regs);
         }
         InstructionKind::Jmp { target } => {
-            emit_branch(out, target, labels, current, n, false);
+            emit_branch(out, target, labels, cf, current, false);
         }
         InstructionKind::Br {
             cond,
@@ -735,13 +909,13 @@ fn lower_instruction(
         } => {
             emit_operand(out, cond, regs, VALTYPE_I64, loc, function, diags);
             condition_to_i32(out);
-            emit_branch(out, then_label, labels, current, n, true);
-            emit_branch(out, else_label, labels, current, n, false);
+            emit_branch(out, then_label, labels, cf, current, true);
+            emit_branch(out, else_label, labels, cf, current, false);
         }
         InstructionKind::BrNull { cond, target, .. } => {
             emit_operand(out, cond, regs, VALTYPE_I64, loc, function, diags);
             put_u8(out, I64_EQZ);
-            emit_branch(out, target, labels, current, n, true);
+            emit_branch(out, target, labels, cf, current, true);
         }
         InstructionKind::Call { target, args } => {
             let sig = match call_sig(program, target) {
@@ -838,7 +1012,7 @@ fn lower_instruction(
                 put_u8(out, RETURN);
                 put_u8(out, UNREACHABLE);
             } else {
-                emit_branch(out, "exit", labels, current, n, false);
+                emit_branch(out, "exit", labels, cf, current, false);
             }
         }
         InstructionKind::Assign { src }
@@ -911,15 +1085,20 @@ pub fn lower_function(
     let labels: Vec<String> = blocks.iter().map(|b| b.label.clone()).collect();
     let ret_storage = storage_type(Some(func.sig.return_value_type())).unwrap_or(VALTYPE_I64);
     if n > 0 {
+        let cf = build_control_flow(func, &labels);
         put_u8(&mut code, BLOCK);
         code.push(0x40);
-        put_u8(&mut code, LOOP);
-        code.push(0x40);
-        for _ in 1..n {
-            put_u8(&mut code, BLOCK);
-            code.push(0x40);
-        }
         for (i, block) in blocks.iter().enumerate() {
+            for kind in &cf.opens[i] {
+                put_u8(
+                    &mut code,
+                    match kind {
+                        ConstructKind::Loop => LOOP,
+                        ConstructKind::Block => BLOCK,
+                    },
+                );
+                code.push(0x40);
+            }
             for ins in &block.instrs {
                 lower_instruction(
                     &mut code,
@@ -928,19 +1107,18 @@ pub fn lower_function(
                     func_index,
                     types,
                     &labels,
+                    &cf,
                     i,
-                    n,
                     program,
                     func.name(),
                     ret_storage,
                     diags,
                 );
             }
-            if i + 1 < n {
+            for _ in 0..cf.closes[i] {
                 put_u8(&mut code, END);
             }
         }
-        put_u8(&mut code, END);
         put_u8(&mut code, END);
     }
     if !func.sig.return_ty.is_void() {
@@ -954,24 +1132,61 @@ pub fn lower_function(
 mod tests {
     use super::*;
 
-    #[test]
-    fn branch_depths_two_blocks() {
-        let labels = vec!["a".to_string(), "b".to_string()];
-        assert_eq!(branch_depth(0, "b", &labels, 2), Some(0));
-        assert_eq!(branch_depth(0, "a", &labels, 2), Some(1));
-        assert_eq!(branch_depth(0, "exit", &labels, 2), Some(2));
-        assert_eq!(branch_depth(1, "a", &labels, 2), Some(0));
-        assert_eq!(branch_depth(1, "exit", &labels, 2), Some(1));
+    fn func_with_jumps(labels: &[&str], jumps: &[(usize, &str)]) -> (Function, Vec<String>) {
+        let mut f = Function::new(Signature::new("test"), SourceLoc::unknown());
+        for label in labels {
+            f.blocks
+                .push(sa_ir::Block::new(*label, SourceLoc::unknown()));
+        }
+        for &(i, target) in jumps {
+            f.blocks[i].instrs.push(Instruction::new(
+                InstructionKind::Jmp {
+                    target: target.to_string(),
+                },
+                SourceLoc::unknown(),
+                "jmp",
+            ));
+        }
+        let labels: Vec<String> = labels.iter().map(|s| s.to_string()).collect();
+        (f, labels)
     }
 
     #[test]
-    fn branch_depths_three_blocks() {
-        let labels = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        assert_eq!(branch_depth(0, "b", &labels, 3), Some(0));
-        assert_eq!(branch_depth(0, "c", &labels, 3), Some(1));
-        assert_eq!(branch_depth(1, "c", &labels, 3), Some(0));
-        assert_eq!(branch_depth(2, "a", &labels, 3), Some(0));
-        assert_eq!(branch_depth(2, "b", &labels, 3), None);
+    fn forward_branches_get_block_end_depths() {
+        let (f, labels) = func_with_jumps(&["a", "b", "c"], &[(0, "c"), (1, "c")]);
+        let cf = build_control_flow(&f, &labels);
+        assert_eq!(cf.depth(0, "c", &labels), Some(1));
+        assert_eq!(cf.depth(1, "c", &labels), Some(0));
+        assert_eq!(cf.depth(0, "exit", &labels), Some(3));
+        assert_eq!(cf.depth(2, "exit", &labels), Some(1));
+    }
+
+    #[test]
+    fn backedge_to_nonzero_header_branches_to_its_loop() {
+        let (f, labels) = func_with_jumps(
+            &["entry", "cond", "body"],
+            &[(0, "cond"), (1, "body"), (2, "cond")],
+        );
+        let cf = build_control_flow(&f, &labels);
+        assert_eq!(cf.depth(2, "cond", &labels), Some(0));
+        assert_eq!(cf.depth(1, "body", &labels), Some(0));
+        assert_eq!(cf.depth(0, "cond", &labels), Some(0));
+        assert_eq!(cf.depth(1, "exit", &labels), Some(3));
+    }
+
+    #[test]
+    fn backedge_lowering_emits_loop_instead_of_unreachable() {
+        let (f, _) = func_with_jumps(&["entry", "cond", "body"], &[(2, "cond")]);
+        let mut diags = Vec::new();
+        let code =
+            lower_function(&Program::new(), &f, &HashMap::new(), &[], "", 0, &mut diags).code;
+        assert!(diags.is_empty());
+        assert!(code.contains(&LOOP));
+        assert!(code.windows(2).any(|w| w[0] == BR && w[1] == 0));
+        assert!(!code.windows(2).any(|w| w[0] == DROP && w[1] == UNREACHABLE));
+        let opens = code.iter().filter(|&&b| b == LOOP || b == BLOCK).count();
+        let ends = code.iter().filter(|&&b| b == END).count();
+        assert_eq!(opens + 1, ends);
     }
 
     #[test]
