@@ -580,7 +580,21 @@ fn op_expr(op: OpKind, args: &[Operand], ty: Option<PrimType>, ctx: &mut FuncCtx
         OpKind::FcmpGt => binary("sa_fcmp_gt", &a, &b),
         OpKind::FcmpGe => binary("sa_fcmp_ge", &a, &b),
         OpKind::Trunc => cvt("trunc", &a, ty, false),
-        OpKind::Zext => cvt("zext", &a, ty, false),
+        OpKind::Zext => {
+            let src_bits = match arg(args, 0) {
+                Operand::Reg(name) => ctx.types.get(name).map(|t| t.bits()).unwrap_or(32),
+                _ => 32,
+            };
+            let zty = ty.unwrap_or(PrimType::I64);
+            format!(
+                "sa_cvt({}, {a}, {}, {}, {}, {}, {src_bits})",
+                js_string("zext"),
+                zty.bits(),
+                zty.is_signed(),
+                zty.is_float(),
+                false
+            )
+        }
         OpKind::Sext => cvt("sext", &a, ty, false),
         OpKind::Fptosi => cvt("fptosi", &a, ty, false),
         OpKind::Sitofp => cvt("sitofp", &a, ty, false),

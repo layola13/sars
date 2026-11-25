@@ -315,7 +315,7 @@ function sa_fcmp_ge(a, b) {
 }
 "##;
 
-const CVT: &str = r##"function sa_cvt(kind, x, bits, signed, tofloat, fromfloat) {
+const CVT: &str = r##"function sa_cvt(kind, x, bits, signed, tofloat, fromfloat, srcbits) {
   if (kind === 'fptrunc') return Math.fround(sa_num(x));
   if (kind === 'fpext') return sa_num(x);
   if (kind === 'sitofp') return Number(sa_big(x));
@@ -358,14 +358,16 @@ const CVT: &str = r##"function sa_cvt(kind, x, bits, signed, tofloat, fromfloat)
     return signed ? (sa_num(x) | 0) : (sa_num(x) >>> 0);
   }
   if (kind === 'zext') {
+    const sb = srcbits || 32;
     if (typeof x === 'bigint') {
-      return wide ? BigInt.asUintN(bits, x) : Number(BigInt.asUintN(bits, x));
+      const w = BigInt.asUintN(sb, x);
+      return wide ? BigInt.asUintN(bits, w) : Number(BigInt.asUintN(bits, w));
     }
     if (wide) {
-      const u = BigInt.asUintN(32, BigInt(sa_num(x) | 0));
+      const u = BigInt.asUintN(sb, BigInt(sa_num(x) | 0));
       return signed ? BigInt.asIntN(bits, u) : BigInt.asUintN(bits, u);
     }
-    const u = (sa_num(x) >>> 0) & ((2 ** bits) - 1);
+    const u = (sa_num(x) >>> 0) & ((2 ** sb) - 1);
     const half = 2 ** (bits - 1);
     return signed ? (u >= half ? u - 2 ** bits : u) : u;
   }
