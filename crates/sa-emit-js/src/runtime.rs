@@ -92,7 +92,7 @@ function sa_store(addr, val, ty) {
     case 'i64': DV.setBigInt64(a, sa_big(val), true); break;
     case 'u64': DV.setBigUint64(a, sa_ubig(val), true); break;
     case 'v128': var v = sa_v128_of(val); DV.setBigInt64(a, v[0], true); DV.setBigInt64(a + 8, v[1], true); break;
-    case 'i1': if (signed) DV.setInt8(a, sa_num(val)); else DV.setUint8(a, sa_num(val)); break;
+    case 'i1': DV.setUint8(a, sa_num(val) & 1); break;
     default: DV.setBigInt64(a, sa_big(val), true); break;
   }
 }
