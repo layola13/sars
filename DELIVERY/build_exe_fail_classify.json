@@ -1,0 +1,700 @@
+{
+ "07_trait_vtable": [
+  "vtable"
+ ],
+ "108_atomic_spin_lock": [
+  "atomics"
+ ],
+ "109_atomic_fetch_add": [
+  "atomics"
+ ],
+ "110_trait_super_vtable": [
+  "vtable"
+ ],
+ "114_callback_from_c": [
+  "vtable"
+ ],
+ "115_opaque_pointers": [
+  "other: MemoryLeak: allocation 'ptr' is still live at function exit"
+ ],
+ "117_inline_assembly": [
+  "native"
+ ],
+ "131_waker_vtable_mechanics": [
+  "vtable"
+ ],
+ "164_trait_upcasting": [
+  "vtable"
+ ],
+ "176_result_flattening": [
+  "fallible"
+ ],
+ "180_try_trait_v2": [
+  "fallible"
+ ],
+ "181_file_descriptor_raii": [
+  "extern"
+ ],
+ "182_mmap_memory_mapping": [
+  "extern"
+ ],
+ "183_signal_handling_setup": [
+  "extern"
+ ],
+ "184_pthread_spawn_join": [
+  "extern"
+ ],
+ "185_dynamic_lib_dlopen": [
+  "extern"
+ ],
+ "186_sqlite_c_api_binding": [
+  "extern"
+ ],
+ "187_opengl_context_swap": [
+  "other: MemoryLeak: allocation 'ctx' is still live at function exit"
+ ],
+ "198_control_flow_guard_cfi": [
+  "vtable"
+ ],
+ "19_result_question": [
+  "fallible"
+ ],
+ "205_pkg_cyclic_dependency_reject": [
+  "other: ForbiddenSyntax: import cycle detected during flattening"
+ ],
+ "207_pkg_multiple_versions_conflict": [
+  "other: DuplicateDef: duplicate definition detected during flattening"
+ ],
+ "220_pkg_lib_dynamic": [
+  "extern"
+ ],
+ "226_mod_cyclic_import_detect": [
+  "other: ForbiddenSyntax: import cycle detected during flattening"
+ ],
+ "227_mod_shadowing_prevention": [
+  "other: DuplicateDef: duplicate definition detected during flattening"
+ ],
+ "228_mod_iface_separation": [
+  "extern"
+ ],
+ "229_mod_layout_injection": [
+  "extern"
+ ],
+ "230_mod_std_prelude": [
+  "extern"
+ ],
+ "236_mod_extern_block_grouping": [
+  "extern"
+ ],
+ "243_contract_sig_mismatch_link": [
+  "other: CapabilityMismatch: argument 1 of '@link_target' expects value capabil"
+ ],
+ "244_contract_vtable_export": [
+  "vtable"
+ ],
+ "247_contract_semver_major_break": [
+  "other: MemoryLeak: allocation 'handle' is still live at function exit"
+ ],
+ "251_contract_resource_ownership": [
+  "other: MemoryLeak: allocation 'handle' is still live at function exit"
+ ],
+ "253_contract_callback_registration": [
+  "other: MemoryLeak: allocation 'slot' is still live at function exit"
+ ],
+ "255_contract_memory_allocator_swap": [
+  "other: MemoryLeak: allocation 'handle' is still live at function exit"
+ ],
+ "257_contract_log_facade": [
+  "other: MemoryLeak: allocation 'msg' is still live at function exit"
+ ],
+ "281_ffi_link_system_libc": [
+  "extern"
+ ],
+ "282_ffi_link_static_c_lib": [
+  "extern"
+ ],
+ "283_ffi_link_dynamic_c_lib": [
+  "extern"
+ ],
+ "284_ffi_pkg_config_integration": [
+  "extern"
+ ],
+ "285_ffi_objective_c_framework": [
+  "extern"
+ ],
+ "286_ffi_rust_staticlib_integration": [
+  "extern"
+ ],
+ "288_ffi_cxx_name_mangling": [
+  "extern"
+ ],
+ "289_ffi_opaque_handle_passing": [
+  "extern"
+ ],
+ "290_ffi_callback_thunk": [
+  "extern"
+ ],
+ "291_eco_wasm_host_imports": [
+  "extern"
+ ],
+ "301_http_client_saasm": [
+  "extern"
+ ],
+ "302_http_server_saasm": [
+  "extern"
+ ],
+ "32_trait_object_vector": [
+  "vtable"
+ ],
+ "331_rc_shared_ownership": [
+  "other: RuntimeError: zig cc failed:"
+ ],
+ "333_weak_cyclic_reference": [
+  "other: RuntimeError: zig cc failed:"
+ ],
+ "334_indirect_import_shadow": [
+  "extern"
+ ],
+ "335_ts_slice_inverted_bounds": [
+  "other: MemoryLeak: allocation 'bp' is still live at function exit",
+  "other: MemoryLeak: allocation 'ddata' is still live at function exit",
+  "other: MemoryLeak: allocation 'h' is still live at function exit",
+  "other: MemoryLeak: allocation 'lh' is still live at function exit",
+  "other: MemoryLeak: allocation 'lp' is still live at function exit",
+  "other: MemoryLeak: allocation 'recv' is still live at function exit",
+  "other: MemoryLeak: allocation 'rh' is still live at function exit",
+  "other: MemoryLeak: allocation 'rp' is still live at function exit",
+  "other: MemoryLeak: allocation 'sdata' is still live at function exit",
+  "other: MemoryLeak: allocation 'sp' is still live at function exit",
+  "other: MemoryLeak: allocation 'src' is still live at function exit",
+  "other: RegisterRedefinition: register 'a1' is already live",
+  "other: RegisterRedefinition: register 'a3' is already live",
+  "other: RegisterRedefinition: register 'cpart' is already live",
+  "other: RegisterRedefinition: register 'eq' is already live",
+  "other: RegisterRedefinition: register 'idx' is already live",
+  "other: RegisterRedefinition: register 'inew' is already live",
+  "other: RegisterRedefinition: register 'numbuf' is already live",
+  "other: RegisterRedefinition: register 'pair' is already live",
+  "other: RegisterRedefinition: register 'part' is already live",
+  "other: RegisterRedefinition: register 'pbuf' is already live"
+ ],
+ "343_bitcast_i32_u32": [
+  "other: UnsupportedType: bitcast width is not supported by the C backend"
+ ],
+ "344_bitcast_u64_i64": [
+  "other: UnsupportedType: bitcast width is not supported by the C backend"
+ ],
+ "363_fence_noop": [
+  "atomics"
+ ],
+ "366_try_unpack_const": [
+  "fallible"
+ ],
+ "367_try_params_arith": [
+  "fallible"
+ ],
+ "368_try_chained": [
+  "fallible"
+ ],
+ "369_try_nested_fallible": [
+  "fallible"
+ ],
+ "370_try_u64_payload": [
+  "fallible"
+ ],
+ "371_try_in_loop": [
+  "fallible"
+ ],
+ "372_try_br_null_combo": [
+  "fallible"
+ ],
+ "373_try_mem_roundtrip": [
+  "fallible"
+ ],
+ "374_try_f64_payload": [
+  "fallible"
+ ],
+ "375_try_branchy_returns": [
+  "fallible"
+ ],
+ "398_bitcast_i64_ptr": [
+  "other: UnsupportedType: bitcast width is not supported by the C backend"
+ ],
+ "400_sitofp_f32_bits": [
+  "other: UnsupportedType: bitcast width is not supported by the C backend"
+ ],
+ "402_bitcast_i32_f32": [
+  "other: UnsupportedType: bitcast width is not supported by the C backend"
+ ],
+ "403_bitcast_f32_i32": [
+  "other: UnsupportedType: bitcast width is not supported by the C backend"
+ ],
+ "416_fallible_f64_const": [
+  "fallible"
+ ],
+ "417_fallible_f64_param": [
+  "fallible"
+ ],
+ "418_fallible_f64_nested": [
+  "fallible"
+ ],
+ "419_fallible_f64_branchy": [
+  "fallible"
+ ],
+ "420_fallible_f64_chain": [
+  "fallible"
+ ],
+ "421_fallible_f32_basic": [
+  "fallible"
+ ],
+ "422_fallible_float_loop": [
+  "fallible"
+ ],
+ "423_fallible_mixed_int_float": [
+  "fallible"
+ ],
+ "424_fallible_float_cmp": [
+  "fallible"
+ ],
+ "425_fallible_f64_negate": [
+  "fallible"
+ ],
+ "426_fallible_mem_f64": [
+  "fallible"
+ ],
+ "427_fallible_mem_f32": [
+  "fallible"
+ ],
+ "428_fallible_mem_arith": [
+  "fallible"
+ ],
+ "429_fallible_mem_int": [
+  "fallible"
+ ],
+ "430_fallible_mem_two_slots": [
+  "fallible"
+ ],
+ "431_fallible_mem_param": [
+  "fallible"
+ ],
+ "432_fallible_mem_nested": [
+  "fallible"
+ ],
+ "433_fallible_mem_loop": [
+  "fallible"
+ ],
+ "434_fallible_mem_branchy": [
+  "fallible"
+ ],
+ "435_fallible_mem_overwrite": [
+  "fallible"
+ ],
+ "456_vtable_f64_const": [
+  "vtable"
+ ],
+ "457_vtable_f64_scale": [
+  "vtable"
+ ],
+ "458_vtable_two_impls": [
+  "vtable"
+ ],
+ "459_vtable_struct_add": [
+  "vtable"
+ ],
+ "460_vtable_mem_spill": [
+  "other: MemoryLeak: allocation 'ctx' is still live at function exit"
+ ],
+ "461_vtable_chain": [
+  "vtable"
+ ],
+ "462_vtable_int_param": [
+  "vtable"
+ ],
+ "463_vtable_branchy_pick": [
+  "vtable"
+ ],
+ "464_vtable_fallible": [
+  "vtable"
+ ],
+ "465_vtable_fneg": [
+  "vtable"
+ ],
+ "466_callback_register_invoke": [
+  "vtable"
+ ],
+ "467_callback_accum_loop": [
+  "vtable"
+ ],
+ "468_callback_slot_write": [
+  "other: MemoryLeak: allocation 'ctx' is still live at function exit"
+ ],
+ "469_callback_chain": [
+  "vtable"
+ ],
+ "470_callback_select": [
+  "vtable"
+ ],
+ "471_callback_int_float": [
+  "vtable"
+ ],
+ "472_callback_f32_double": [
+  "vtable"
+ ],
+ "473_callback_nested_invoke": [
+  "vtable"
+ ],
+ "474_callback_signed_branch": [
+  "vtable"
+ ],
+ "475_callback_const_producer": [
+  "vtable"
+ ],
+ "478_vtable_export_float": [
+  "vtable"
+ ],
+ "480_callback_reg_float": [
+  "vtable"
+ ],
+ "485_vtable_param_float": [
+  "vtable"
+ ],
+ "496_npm_os_totalmem": [
+  "npm_bind"
+ ],
+ "497_npm_os_parallelism": [
+  "npm_bind"
+ ],
+ "498_npm_path_isabs": [
+  "npm_bind"
+ ],
+ "499_npm_util_isequal": [
+  "npm_bind"
+ ],
+ "500_npm_ns_isabs": [
+  "npm_bind"
+ ],
+ "501_npm_ns_isequal": [
+  "npm_bind"
+ ],
+ "502_bare_crossdir_import_reject": [
+  "other: ImportResolutionFailed: import path could not be resolved"
+ ],
+ "50_error_chain": [
+  "fallible"
+ ],
+ "512_chain3_int": [
+  "fallible"
+ ],
+ "513_diamond_fallible": [
+  "fallible"
+ ],
+ "514_barrel_fallible": [
+  "fallible"
+ ],
+ "515_branchy_fallible": [
+  "fallible"
+ ],
+ "516_loop_fallible": [
+  "fallible"
+ ],
+ "517_code_map": [
+  "fallible"
+ ],
+ "518_nested3_fallible": [
+  "fallible"
+ ],
+ "519_vtable_fallible_split": [
+  "vtable"
+ ],
+ "520_mem_fallible_split": [
+  "fallible"
+ ],
+ "521_callback_fallible_split": [
+  "vtable"
+ ],
+ "526_loop_code_check": [
+  "fallible"
+ ],
+ "530_vtable_codeval": [
+  "other: MemoryLeak: allocation 'ctx' is still live at function exit"
+ ],
+ "538_vtable_pair_code": [
+  "other: MemoryLeak: allocation 'ctx' is still live at function exit"
+ ],
+ "539_callback_codeval": [
+  "vtable"
+ ],
+ "548_vtable_store_code": [
+  "other: MemoryLeak: allocation 'ctx' is still live at function exit"
+ ],
+ "549_callback_add_code": [
+  "vtable"
+ ],
+ "54_mem_fill": [
+  "extern"
+ ],
+ "560_vtable_dual_code": [
+  "vtable"
+ ],
+ "568_vtable_calc_code": [
+  "vtable"
+ ],
+ "569_callback_pair_code": [
+  "vtable"
+ ],
+ "578_vtable_add2_code": [
+  "vtable"
+ ],
+ "579_callback_const_code": [
+  "vtable"
+ ],
+ "588_vtable_sub_code": [
+  "vtable"
+ ],
+ "589_callback_add3_code": [
+  "vtable"
+ ],
+ "598_vtable_mul_code": [
+  "vtable"
+ ],
+ "599_callback_sub_code": [
+  "vtable"
+ ],
+ "608_vtable_neg_code": [
+  "other: MemoryLeak: allocation 'ctx' is still live at function exit"
+ ],
+ "609_callback_mul_code": [
+  "vtable"
+ ],
+ "618_vtable_id_code": [
+  "vtable"
+ ],
+ "619_callback_max_code": [
+  "vtable"
+ ],
+ "628_vtable_add3_code": [
+  "vtable"
+ ],
+ "629_callback_id_code": [
+  "vtable"
+ ],
+ "638_vtable_sub2_code": [
+  "vtable"
+ ],
+ "639_callback_div_code": [
+  "vtable"
+ ],
+ "648_vtable_double_code": [
+  "vtable"
+ ],
+ "649_callback_neg_code": [
+  "vtable"
+ ],
+ "658_vtable_load_code": [
+  "other: MemoryLeak: allocation 'ctx' is still live at function exit"
+ ],
+ "659_callback_add4_code": [
+  "vtable"
+ ],
+ "668_vtable_pair2_code": [
+  "vtable"
+ ],
+ "669_callback_or_code": [
+  "vtable"
+ ],
+ "678_vtable_zero_code": [
+  "vtable"
+ ],
+ "679_callback_add5_code": [
+  "vtable"
+ ],
+ "688_vtable_max2_code": [
+  "vtable"
+ ],
+ "689_callback_add6_code": [
+  "vtable"
+ ],
+ "698_vtable_add7_code": [
+  "vtable"
+ ],
+ "699_callback_sub2_code": [
+  "vtable"
+ ],
+ "708_vtable_cmp_code": [
+  "vtable"
+ ],
+ "709_callback_and_code": [
+  "vtable"
+ ],
+ "718_vtable_wrap_code": [
+  "vtable"
+ ],
+ "719_callback_pick_code": [
+  "vtable"
+ ],
+ "728_vtable_dispatch_code": [
+  "vtable"
+ ],
+ "729_callback_not_code": [
+  "vtable"
+ ],
+ "738_vtable_route_code": [
+  "vtable"
+ ],
+ "739_callback_sign_code": [
+  "vtable"
+ ],
+ "748_vtable_twice_code": [
+  "vtable"
+ ],
+ "749_callback_zero_code": [
+  "vtable"
+ ],
+ "758_vtable_min_code": [
+  "vtable"
+ ],
+ "759_callback_eq_code": [
+  "vtable"
+ ],
+ "768_vtable_once_code": [
+  "vtable"
+ ],
+ "769_callback_gt_code": [
+  "vtable"
+ ],
+ "778_vtable_self_code": [
+  "vtable"
+ ],
+ "779_callback_le_code": [
+  "vtable"
+ ],
+ "788_vtable_chain_code": [
+  "vtable"
+ ],
+ "789_callback_min_code": [
+  "vtable"
+ ],
+ "798_vtable_apply_code": [
+  "vtable"
+ ],
+ "799_callback_ne_code": [
+  "vtable"
+ ],
+ "808_vtable_pick3_code": [
+  "vtable"
+ ],
+ "809_callback_shl_code": [
+  "vtable"
+ ],
+ "818_vtable_alt_code": [
+  "vtable"
+ ],
+ "819_callback_nz_code": [
+  "vtable"
+ ],
+ "81_kv_store": [
+  "extern"
+ ],
+ "828_vtable_swap_code": [
+  "vtable"
+ ],
+ "829_callback_all_code": [
+  "vtable"
+ ],
+ "838_vtable_pick4_code": [
+  "vtable"
+ ],
+ "839_callback_any_code": [
+  "vtable"
+ ],
+ "848_vtable_fold_code": [
+  "vtable"
+ ],
+ "849_callback_both_code": [
+  "vtable"
+ ],
+ "858_vtable_bestof_code": [
+  "vtable"
+ ],
+ "859_callback_nor_code": [
+  "vtable"
+ ],
+ "868_vtable_or_code": [
+  "vtable"
+ ],
+ "869_callback_xor_code": [
+  "vtable"
+ ],
+ "878_vtable_multi_code": [
+  "vtable"
+ ],
+ "879_callback_nand_code": [
+  "vtable"
+ ],
+ "888_vtable_guard_code": [
+  "vtable"
+ ],
+ "889_callback_iff_code": [
+  "vtable"
+ ],
+ "898_vtable_chain3_code": [
+  "vtable"
+ ],
+ "899_callback_majority_code": [
+  "vtable"
+ ],
+ "908_vtable_round_code": [
+  "vtable"
+ ],
+ "909_callback_cond_code": [
+  "vtable"
+ ],
+ "918_vtable_seq_code": [
+  "vtable"
+ ],
+ "919_callback_some_code": [
+  "vtable"
+ ],
+ "928_vtable_step_code": [
+  "vtable"
+ ],
+ "929_callback_odd_code": [
+  "vtable"
+ ],
+ "938_vtable_once2_code": [
+  "vtable"
+ ],
+ "939_callback_even_code": [
+  "vtable"
+ ],
+ "948_vtable_wrap2_code": [
+  "vtable"
+ ],
+ "949_callback_and3_code": [
+  "vtable"
+ ],
+ "958_vtable_twice2_code": [
+  "vtable"
+ ],
+ "959_callback_all3_code": [
+  "vtable"
+ ],
+ "963_compress_checksum": [
+  "extern"
+ ],
+ "964_multipart_checksum": [
+  "extern"
+ ],
+ "965_npm_handle_ctor_method": [
+  "npm_bind"
+ ],
+ "966_npm_handle_string_out": [
+  "npm_bind"
+ ],
+ "967_npm_handle_bytes_view": [
+  "npm_bind"
+ ],
+ "968_npm_handle_callback": [
+  "npm_bind"
+ ]
+}
