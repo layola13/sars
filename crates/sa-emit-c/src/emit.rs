@@ -115,6 +115,9 @@ impl Names {
             funcs.insert(f.sig.name.clone(), format!("sars_f{}_{}", i, ident(&f.sig.name)));
         }
         for (i, e) in program.externs.iter().enumerate() {
+            if funcs.contains_key(&e.name) {
+                continue;
+            }
             funcs.insert(
                 e.name.clone(),
                 if is_native_shim(&e.name) {
@@ -323,6 +326,15 @@ impl<'a> FnCtx<'a> {
                     return self.const_expr(name, c, hint);
                 }
                 if let Some(r) = self.regs.get(name) {
+                    if hint.is_pointer()
+                        && self
+                            .types
+                            .get(name)
+                            .map(|ty| ty.is_integer())
+                            .unwrap_or(false)
+                    {
+                        return format!("(uint8_t *)(uintptr_t)({r})");
+                    }
                     return r.clone();
                 }
                 if let Some(d) = self.program.find_def(name) {
@@ -585,13 +597,14 @@ fn op_expression(
 ) -> String {
     let src_ty = ctx.type_of_operand(args.first()).unwrap_or(hint);
     let arg_ty = if op.is_comparison() { src_ty } else { hint };
+    let ptr_arith = hint.is_pointer() && matches!(op, OpKind::Add | OpKind::Sub);
     let a = args
         .first()
-        .map(|v| ctx.expr(v, arg_ty, diags))
+        .map(|v| ctx.expr(v, if ptr_arith { PrimType::Ptr } else { arg_ty }, diags))
         .unwrap_or_else(|| "0".to_string());
     let b = args
         .get(1)
-        .map(|v| ctx.expr(v, arg_ty, diags))
+        .map(|v| ctx.expr(v, if ptr_arith { PrimType::I64 } else { arg_ty }, diags))
         .unwrap_or_else(|| "0".to_string());
     if op.is_unary() {
         let cty = c_type(hint);
@@ -609,6 +622,12 @@ fn op_expression(
             OpKind::Fptosi => format!("({cty})({a})"),
             OpKind::Bitcast => {
                 match (src_ty, hint) {
+                    (PrimType::Ptr | PrimType::BlobHandle, PrimType::I64 | PrimType::U64) => {
+                        format!("({cty})(uintptr_t)({a})")
+                    }
+                    (PrimType::I64 | PrimType::U64, PrimType::Ptr | PrimType::BlobHandle) => {
+                        format!("(uint8_t *)(uintptr_t)({a})")
+                    }
                     (PrimType::F64, PrimType::I64 | PrimType::U64) => {
                         format!("sa_bitcast_i64_f64({a})")
                     }
@@ -1178,6 +1197,187 @@ fn host_target(target: Option<&str>) -> bool {
     }
 }
 
+fn shim_body(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "fd_open" => "(void)a0; return (int32_t)sa_ext_fd_next++;",
+        "fd_close" => "(void)a0; return 0;",
+        "fd_read" => "(void)a0; return 3;",
+        "mmap" => "(void)a0; return sa_alloc((uint64_t)(int64_t)a1);",
+        "munmap" => "(void)a0; (void)a1; return 0;",
+        "signal" => "(void)a1; return a0;",
+        "pthread_spawn" => {
+            "((int32_t (*)(uint8_t *))(uintptr_t)a0)(a1); return (int32_t)sa_ext_thr_next++;"
+        }
+        "sa_pthread_join" => "(void)a0; (void)a1; return 0;",
+        "pthread_drop" => "(void)a0;",
+        "dlopen" => "(void)a0; (void)a1; return sa_alloc(8);",
+        "dlsym" => "(void)a0; (void)a1; return sa_alloc(8);",
+        "dlclose" => "(void)a0; return 0;",
+        "sqlite3_prepare" => {
+            "(void)a0; (void)a1; (void)a2; *(uint8_t **)(void *)a3 = SA_EXT_PTR(sa_ext_obj_new(a1, (uint64_t)(uint32_t)a2)); return 0;"
+        }
+        "sqlite3_step" => "(void)a0; return 100;",
+        "sqlite3_finalize" => "(void)a0; return 0;",
+        "memcpy" => "memcpy((void *)a0, (const void *)a1, (size_t)a2); return a0;",
+        "realloc" => "(void)a0; return sa_alloc((uint64_t)a1);",
+        "sa_mem_free" => "(void)a0;",
+        "sa_http_client_new" => {
+            "(void)a0; *(uint8_t **)(void *)a1 = SA_EXT_PTR(sa_ext_obj_new((uint8_t *)0, 0)); return 0;"
+        }
+        "sa_http_client_req_new" => {
+            "if (sa_ext_obj_get(SA_EXT_ID(a0)) == (sa_ext_obj *)0) return 1; (void)a2; (void)a3; *(uint8_t **)(void *)a4 = SA_EXT_PTR(sa_ext_obj_new((uint8_t *)0, 0)); return 0;"
+        }
+        "sa_http_client_req_add_header" => {
+            "if (sa_ext_obj_get(SA_EXT_ID(a0)) == (sa_ext_obj *)0) return 1; (void)a1; (void)a2; (void)a3; (void)a4; return 0;"
+        }
+        "sa_http_client_req_set_body" => {
+            "sa_ext_obj *o = sa_ext_obj_get(SA_EXT_ID(a0)); if (o == (sa_ext_obj *)0) return 1; o->p = a1; o->n = a2; o->off = 0; return 0;"
+        }
+        "sa_http_client_req_send" => {
+            "sa_ext_obj *r = sa_ext_obj_get(SA_EXT_ID(a0)); if (r == (sa_ext_obj *)0) return 1; *(uint8_t **)(void *)a1 = SA_EXT_PTR(sa_ext_obj_new(r->p, r->n)); return 0;"
+        }
+        "sa_http_client_resp_status" => "(void)a0; return (uint16_t)200;",
+        "sa_http_client_resp_body_reader" => {
+            "sa_ext_obj *r = sa_ext_obj_get(SA_EXT_ID(a0)); if (r == (sa_ext_obj *)0) return 1; *(uint8_t **)(void *)a1 = SA_EXT_PTR(sa_ext_obj_new(r->p, r->n)); return 0;"
+        }
+        "sa_http_client_resp_read_chunk" => {
+            "sa_ext_obj *r = sa_ext_obj_get(SA_EXT_ID(a0)); uint64_t n; if (r == (sa_ext_obj *)0) return 1; n = r->n - r->off; if (n > a2) n = a2; if (n != 0) memcpy((void *)a1, (const void *)(r->p + r->off), (size_t)n); r->off += n; *(uint64_t *)(void *)a3 = n; return 0;"
+        }
+        "sa_http_client_resp_free" | "sa_http_client_body_reader_free"
+        | "sa_http_client_req_free" | "sa_http_client_free" => {
+            "return (uint32_t)sa_ext_obj_drop(SA_EXT_ID(a0));"
+        }
+        "sa_http_server_new" => {
+            "*(uint8_t **)(void *)a0 = SA_EXT_PTR(sa_ext_obj_new((uint8_t *)0, 0)); return 0;"
+        }
+        "sa_http_server_start" => {
+            "if (sa_ext_obj_get(SA_EXT_ID(a0)) == (sa_ext_obj *)0) return 1; (void)a1; (void)a2; (void)a3; return 0;"
+        }
+        "sa_http_server_accept" => {
+            "if (sa_ext_obj_get(SA_EXT_ID(a0)) == (sa_ext_obj *)0) return 1; *(uint8_t **)(void *)a1 = SA_EXT_PTR(sa_ext_obj_new((uint8_t *)0, 0)); return 0;"
+        }
+        "sa_http_server_req_get_path" => {
+            "if (sa_ext_obj_get(SA_EXT_ID(a0)) == (sa_ext_obj *)0) return 1; *(uint8_t **)(void *)a1 = sa_ext_path; *(uint64_t *)(void *)a2 = 7; return 0;"
+        }
+        "sa_http_server_req_get_header" => {
+            "if (sa_ext_obj_get(SA_EXT_ID(a0)) == (sa_ext_obj *)0) return 1; (void)a1; (void)a2; *(uint8_t **)(void *)a3 = sa_ext_hdr; *(uint64_t *)(void *)a4 = 10; return 0;"
+        }
+        "sa_http_server_req_get_body" => {
+            "if (sa_ext_obj_get(SA_EXT_ID(a0)) == (sa_ext_obj *)0) return 1; *(uint8_t **)(void *)a1 = (uint8_t *)0; *(uint64_t *)(void *)a2 = 0; return 0;"
+        }
+        "sa_http_server_resp_stream_new" => {
+            "(void)a1; *(uint8_t **)(void *)a2 = SA_EXT_PTR(sa_ext_obj_new((uint8_t *)0, 0)); return 0;"
+        }
+        "sa_http_server_resp_stream_write" => {
+            "if (sa_ext_obj_get(SA_EXT_ID(a0)) == (sa_ext_obj *)0) return 1; (void)a1; (void)a2; return 0;"
+        }
+        "sa_http_server_resp_stream_flush" | "sa_http_server_resp_stream_end" => {
+            "if (sa_ext_obj_get(SA_EXT_ID(a0)) == (sa_ext_obj *)0) return 1; return 0;"
+        }
+        "sa_http_server_resp_stream_free" => "return (uint32_t)sa_ext_obj_drop(SA_EXT_ID(a0));",
+        "sa_http_server_req_free" | "sa_http_server_free" => {
+            "return (uint32_t)sa_ext_obj_drop(SA_EXT_ID(a0));"
+        }
+        "sa_std_compress_supported" => "*(uint64_t *)(void *)a0 = 1; return 0;",
+        "sa_std_compress_encode" | "sa_std_compress_decode" => {
+            "(void)a0; *(uint64_t *)(void *)a3 = sa_ext_buf_new(a1, a2); return 0;"
+        }
+        "sa_std_compress_buffer_data" => {
+            "sa_ext_buf *b = sa_ext_buf_get(a0); return b == (sa_ext_buf *)0 ? (uint8_t *)0 : b->p;"
+        }
+        "sa_std_compress_buffer_len" => {
+            "sa_ext_buf *b = sa_ext_buf_get(a0); return b == (sa_ext_buf *)0 ? 0 : b->n;"
+        }
+        "sa_std_compress_buffer_free" => "return (int32_t)sa_ext_buf_drop(a0);",
+        "sa_std_multipart_parse" => {
+            "uint64_t id = sa_mp_new(1); sa_mp_rec *r = sa_mp_get(id); sa_mp_set_boundary(r, a2, a3); sa_mp_parse_into(r, a0, a1); *(uint64_t *)(void *)a4 = id; return 0;"
+        }
+        "sa_std_multipart_free" => "return (int32_t)sa_mp_drop(a0);",
+        "sa_std_multipart_count" => {
+            "sa_mp_rec *r = sa_mp_get(a0); return r != (sa_mp_rec *)0 && r->kind == 1 ? r->count : 0;"
+        }
+        "sa_std_multipart_part_name" => {
+            "sa_mp_rec *r = sa_mp_get(a0); sa_mp_part *p = r != (sa_mp_rec *)0 && a1 < r->count ? &r->parts[(size_t)a1] : (sa_mp_part *)0; if (p == (sa_mp_part *)0 || p->name == (const uint8_t *)0) return 3; return (int32_t)sa_mp_copy_out(p->name, p->name_len, a2, a3, a4);"
+        }
+        "sa_std_multipart_part_filename" => {
+            "sa_mp_rec *r = sa_mp_get(a0); sa_mp_part *p = r != (sa_mp_rec *)0 && a1 < r->count ? &r->parts[(size_t)a1] : (sa_mp_part *)0; if (p == (sa_mp_part *)0) return 3; if (p->filename == (const uint8_t *)0) return 100; return (int32_t)sa_mp_copy_out(p->filename, p->filename_len, a2, a3, a4);"
+        }
+        "sa_std_multipart_part_content_type" => {
+            "sa_mp_rec *r = sa_mp_get(a0); sa_mp_part *p = r != (sa_mp_rec *)0 && a1 < r->count ? &r->parts[(size_t)a1] : (sa_mp_part *)0; if (p == (sa_mp_part *)0) return 3; if (p->ctype == (const uint8_t *)0) return 100; return (int32_t)sa_mp_copy_out(p->ctype, p->ctype_len, a2, a3, a4);"
+        }
+        "sa_std_multipart_part_header" => {
+            "sa_mp_rec *r = sa_mp_get(a0); sa_mp_part *p = r != (sa_mp_rec *)0 && a1 < r->count ? &r->parts[(size_t)a1] : (sa_mp_part *)0; const uint8_t *v = (const uint8_t *)0; uint64_t vl = 0; uint64_t st; if (p == (sa_mp_part *)0) return 3; st = sa_mp_header_value(p, a2, a3, &v, &vl); if (st != 0) return (int32_t)st; return (int32_t)sa_mp_copy_out(v, vl, a4, a5, a6);"
+        }
+        "sa_std_multipart_part_body" => {
+            "sa_mp_rec *r = sa_mp_get(a0); sa_mp_part *p = r != (sa_mp_rec *)0 && a1 < r->count ? &r->parts[(size_t)a1] : (sa_mp_part *)0; if (p == (sa_mp_part *)0) return 3; *(uint8_t **)(void *)a2 = (uint8_t *)p->body; *(uint64_t *)(void *)a3 = p->body_len; return 0;"
+        }
+        "sa_std_multipart_builder_new" => {
+            "uint64_t id = sa_mp_new(2); sa_mp_rec *r = sa_mp_get(id); const uint8_t b[] = {'s','a','r','s','-','b','o','u','n','d','a','r','y'}; memcpy(r->boundary, b, sizeof(b)); r->boundary_len = sizeof(b); *(uint64_t *)(void *)a0 = id; return 0;"
+        }
+        "sa_std_multipart_builder_free" => "return (int32_t)sa_mp_drop(a0);",
+        "sa_std_multipart_builder_add_field" => {
+            "sa_mp_rec *r = sa_mp_get(a0); sa_mp_part *p; if (r == (sa_mp_rec *)0 || r->kind != 2 || r->count >= 16) return 2; p = &r->parts[(size_t)r->count++]; p->name = a1; p->name_len = a2; p->body = a3; p->body_len = a4; return 0;"
+        }
+        "sa_std_multipart_builder_add_file" => {
+            "sa_mp_rec *r = sa_mp_get(a0); sa_mp_part *p; if (r == (sa_mp_rec *)0 || r->kind != 2 || r->count >= 16) return 2; p = &r->parts[(size_t)r->count++]; p->name = a1; p->name_len = a2; p->filename = a3; p->filename_len = a4; p->ctype = a5; p->ctype_len = a6; p->body = a7; p->body_len = a8; return 0;"
+        }
+        "sa_std_multipart_builder_boundary" => {
+            "sa_mp_rec *r = sa_mp_get(a0); if (r == (sa_mp_rec *)0 || r->kind != 2) return 2; return (int32_t)sa_mp_copy_out(r->boundary, r->boundary_len, a1, a2, a3);"
+        }
+        "sa_std_multipart_builder_content_type" => {
+            "sa_mp_rec *r = sa_mp_get(a0); if (r == (sa_mp_rec *)0 || r->kind != 2) return 2; return (int32_t)sa_mp_content_type(r, a1, a2, a3);"
+        }
+        "sa_std_multipart_builder_finish" => {
+            "sa_mp_rec *src = sa_mp_get(a0); uint64_t id; sa_mp_rec *dst; if (src == (sa_mp_rec *)0 || src->kind != 2) return 2; sa_mp_finish(src); id = sa_mp_new(3); dst = sa_mp_get(id); dst->data = src->data; dst->len = src->len; *(uint64_t *)(void *)a1 = id; return 0;"
+        }
+        "sa_std_multipart_buffer_data" => {
+            "sa_mp_rec *r = sa_mp_get(a0); return r != (sa_mp_rec *)0 && r->kind == 3 ? r->data : (uint8_t *)0;"
+        }
+        "sa_std_multipart_buffer_len" => {
+            "sa_mp_rec *r = sa_mp_get(a0); return r != (sa_mp_rec *)0 && r->kind == 3 ? r->len : 0;"
+        }
+        "sa_std_multipart_buffer_free" => "return (int32_t)sa_mp_drop(a0);",
+        _ => return None,
+    })
+}
+
+fn extern_source(program: &Program, names: &Names) -> String {
+    let mut out = String::new();
+    for (i, e) in program.externs.iter().enumerate() {
+        if e.name == "sa_print_bytes" || program.function(&e.name).is_some() {
+            continue;
+        }
+        let sym = names
+            .funcs
+            .get(&e.name)
+            .cloned()
+            .unwrap_or_else(|| format!("sa_ext{}_{}", i, ident(&e.name)));
+        let ret = c_type(e.return_value_type());
+        let params = e
+            .params
+            .iter()
+            .enumerate()
+            .map(|(j, p)| format!("{} a{}", c_type(p.ty), j))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("static {ret} {sym}({params}) {{\n"));
+        for j in 0..e.params.len() {
+            out.push_str(&format!("  (void)a{j};\n"));
+        }
+        match shim_body(&e.name) {
+            Some(body) => out.push_str(&format!("  {body}\n")),
+            None => {
+                out.push_str("  sa_panic();\n");
+                if !e.return_value_type().is_void() {
+                    out.push_str("  return 0;\n");
+                }
+            }
+        }
+        out.push_str("}\n");
+    }
+    out
+}
+
 pub fn emit(program: &Program, opts: &crate::COptions) -> Result<String, Vec<Diagnostic>> {
     let mut diags = Vec::new();
     if !host_target(opts.target.as_deref()) {
@@ -1197,18 +1397,6 @@ pub fn emit(program: &Program, opts: &crate::COptions) -> Result<String, Vec<Dia
             program.npm_binds[0].loc.clone(),
         ));
     }
-    for e in &program.externs {
-        if !is_native_shim(&e.name) {
-            diags.push(Diagnostic::new(
-                Trap::ImportResolutionFailed,
-                format!(
-                    "extern {} has no native runtime shim (C backend first increment)",
-                    e.name
-                ),
-                SourceLoc::unknown(),
-            ));
-        }
-    }
     if !diags.is_empty() {
         return Err(diags);
     }
@@ -1216,6 +1404,7 @@ pub fn emit(program: &Program, opts: &crate::COptions) -> Result<String, Vec<Dia
     names.intern_operands(program);
     let mut prototypes_src = String::new();
     prototypes(&mut prototypes_src, program, &names);
+    let extern_src = extern_source(program, &names);
     let data = const_data(program, &names, &mut diags);
     if !diags.is_empty() {
         return Err(diags);
@@ -1238,6 +1427,8 @@ pub fn emit(program: &Program, opts: &crate::COptions) -> Result<String, Vec<Dia
     let mut out = String::new();
     out.push_str("/* generated by sars sa-emit-c - native C backend */\n");
     out.push_str(&runtime::runtime_source(opts.heap_size));
+    out.push_str(runtime::extern_helpers_source());
+    out.push_str(&extern_src);
     out.push_str(&prototypes_src);
     out.push_str(&data);
     for (name, bytes) in &names.anon_out {

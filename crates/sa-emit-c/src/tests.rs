@@ -229,13 +229,32 @@ fn emits_fallible_call_try_and_return() {
 }
 
 #[test]
-fn rejects_unsupported_extern() {
+fn emits_unknown_extern_as_trap_stub() {
     let mut p = Program::new();
     let mut sig = Signature::new("puts");
     sig.params.push(ParamSpec::new("s", PrimType::Ptr, CapPrefix::Borrow));
     p.externs.push(sig);
-    let errs = emit_c(&p, &COptions::default()).unwrap_err();
-    assert!(errs.iter().any(|d| d.trap == Trap::ImportResolutionFailed));
+    let c = emit_c(&p, &COptions::default()).unwrap();
+    assert!(c.contains("static void sa_ext0_puts"), "{c}");
+    assert!(c.contains("sa_panic();"), "{c}");
+}
+
+#[test]
+fn emits_staged_extern_shims() {
+    let mut p = Program::new();
+    let mut fd_open = Signature::new("fd_open");
+    fd_open.return_ty = PrimType::I32;
+    let mut memcpy = Signature::new("memcpy");
+    memcpy.params.push(ParamSpec::new("dst", PrimType::Ptr, CapPrefix::Raw));
+    memcpy.params.push(ParamSpec::new("src", PrimType::Ptr, CapPrefix::Borrow));
+    memcpy.params.push(ParamSpec::new("n", PrimType::U64, CapPrefix::ByValue));
+    memcpy.return_ty = PrimType::Ptr;
+    p.externs.push(fd_open);
+    p.externs.push(memcpy);
+    let c = emit_c(&p, &COptions::default()).unwrap();
+    assert!(c.contains("sa_ext_fd_next++"), "{c}");
+    assert!(c.contains("memcpy((void *)a0, (const void *)a1"), "{c}");
+    assert!(c.contains("sa_ext_buf_new"), "{c}");
 }
 
 #[test]
