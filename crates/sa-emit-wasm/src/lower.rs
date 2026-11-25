@@ -1,6 +1,11 @@
 use crate::leb::{put_sleb, put_u8, put_uleb};
 use crate::opcode::*;
-use sa_ir::{Address, Diagnostic, Function, Instruction, InstructionKind, Operand, OpKind, PrimType, Program, Signature, SourceLoc, Trap};
+use crate::sections::functype;
+use crate::SA_FN_BASE;
+use sa_ir::{
+    Address, ConstValue, Diagnostic, Function, Instruction, InstructionKind, OpKind, Operand,
+    PrimType, Program, Signature, SourceLoc, Trap,
+};
 use std::collections::HashMap;
 
 pub struct FunctionCode {
@@ -13,6 +18,7 @@ struct Registers {
     types: Vec<u8>,
     scratch: [u32; 2],
     consts: HashMap<String, u32>,
+    indirect_drops: HashMap<usize, u8>,
 }
 
 fn diag(trap: Trap, message: &str, loc: &SourceLoc, function: &str) -> Diagnostic {
@@ -71,11 +77,111 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
             types.len() as u32 - 1
         },
     ];
-    let consts = crate::const_layout(program)
+    let consts: HashMap<String, u32> = crate::const_layout(program)
         .into_iter()
         .map(|segment| (segment.name, segment.addr))
         .collect();
-    Registers { map, types, scratch, consts }
+    let mut indirect_drops = HashMap::new();
+    let mut probe = Registers {
+        map: map.clone(),
+        types: types.clone(),
+        scratch,
+        consts: consts.clone(),
+        indirect_drops: HashMap::new(),
+    };
+    for ins in &instrs {
+        let Some(dest) = ins.dest.as_deref() else {
+            continue;
+        };
+        let Some(&index) = map.get(dest) else {
+            continue;
+        };
+        let result = match &ins.kind {
+            InstructionKind::Op { op, args } => {
+                let storage = match op {
+                    OpKind::Sitofp | OpKind::Uitofp => VALTYPE_I64,
+                    OpKind::Fptosi => VALTYPE_F64,
+                    _ => operand_storage(args.first(), &probe, ins.ty),
+                };
+                Some(if op.is_comparison() {
+                    VALTYPE_I64
+                } else {
+                    match op {
+                        OpKind::Fptosi => VALTYPE_I64,
+                        OpKind::Sitofp | OpKind::Uitofp => VALTYPE_F64,
+                        _ => storage,
+                    }
+                })
+            }
+            InstructionKind::Call { target, .. } => call_sig(program, target)
+                .filter(|sig| !sig.return_value_type().is_void())
+                .map(|sig| storage_type(Some(sig.return_value_type())).unwrap_or(VALTYPE_I64)),
+            _ => None,
+        };
+        if let Some(result) = result {
+            probe.types[index as usize] = result;
+            types[index as usize] = result;
+        }
+    }
+    let signatures = vtable_signatures(program);
+    for ins in &instrs {
+        if let InstructionKind::CallIndirect { args, .. } = &ins.kind {
+            let arg_storages: Vec<u8> = args
+                .iter()
+                .map(|a| operand_storage(Some(&a.value), &probe, None))
+                .collect();
+            let matches: Vec<&&Signature> = signatures
+                .iter()
+                .filter(|sig| {
+                    sig.params.len() == arg_storages.len()
+                        && sig
+                            .params
+                            .iter()
+                            .zip(arg_storages.iter())
+                            .all(|(p, s)| storage_type(Some(p.ty)).unwrap_or(VALTYPE_I64) == *s)
+                })
+                .collect();
+            let result = matches
+                .iter()
+                .filter(|sig| !sig.return_value_type().is_void())
+                .map(|sig| storage_type(Some(sig.return_value_type())).unwrap_or(VALTYPE_I64))
+                .next();
+            if let Some(result) = result {
+                if let Some(name) = &ins.dest {
+                    if let Some(&index) = map.get(name) {
+                        types[index as usize] = result;
+                        probe.types[index as usize] = result;
+                    }
+                } else {
+                    indirect_drops.insert(*ins as *const Instruction as usize, result);
+                }
+            }
+        }
+    }
+    Registers {
+        map,
+        types,
+        scratch,
+        consts,
+        indirect_drops,
+    }
+}
+
+fn vtable_signatures(program: &Program) -> Vec<&Signature> {
+    let mut out = Vec::new();
+    for constant in &program.consts {
+        let ConstValue::VTable(entries) = &constant.value else {
+            continue;
+        };
+        for entry in entries {
+            if let Some(target) = entry.vtable_target() {
+                if let Some(func) = program.functions.iter().find(|f| f.sig.name == target) {
+                    out.push(&func.sig);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn local_get(out: &mut Vec<u8>, index: u32) {
@@ -364,8 +470,12 @@ fn numeric_opcode(op: OpKind, storage: u8, ty: Option<PrimType>) -> Option<u8> {
         OpKind::Fpext | OpKind::Fptrunc => return None,
         OpKind::Trunc | OpKind::Zext | OpKind::Sext | OpKind::Bitcast => return None,
         OpKind::Neg | OpKind::FNeg | OpKind::Not => return None,
-        OpKind::AddV128 | OpKind::SubV128 | OpKind::MulV128 | OpKind::ShuffleV128
-        | OpKind::ExtractLane | OpKind::InsertLane => return None,
+        OpKind::AddV128
+        | OpKind::SubV128
+        | OpKind::MulV128
+        | OpKind::ShuffleV128
+        | OpKind::ExtractLane
+        | OpKind::InsertLane => return None,
     };
     Some(code)
 }
@@ -390,8 +500,12 @@ fn lower_op(
     let conversion = op.is_conversion();
     let mut result_storage = storage;
     match op {
-        OpKind::AddV128 | OpKind::SubV128 | OpKind::MulV128 | OpKind::ShuffleV128
-        | OpKind::ExtractLane | OpKind::InsertLane => {
+        OpKind::AddV128
+        | OpKind::SubV128
+        | OpKind::MulV128
+        | OpKind::ShuffleV128
+        | OpKind::ExtractLane
+        | OpKind::InsertLane => {
             diags.push(diag(
                 Trap::UnsupportedType,
                 "v128 operations are not supported",
@@ -462,17 +576,18 @@ fn lower_op(
 }
 
 fn call_sig<'a>(program: &'a Program, name: &str) -> Option<&'a Signature> {
-    program
-        .externs
-        .iter()
-        .find(|e| e.name == name)
-        .or_else(|| {
-            program
-                .functions
-                .iter()
-                .find(|f| f.sig.name == name)
-                .map(|f| &f.sig)
-        })
+    program.externs.iter().find(|e| e.name == name).or_else(|| {
+        program
+            .functions
+            .iter()
+            .find(|f| f.sig.name == name)
+            .map(|f| &f.sig)
+    })
+}
+
+fn indirect_type_index(types: &[Vec<u8>], params: &[u8], results: &[u8]) -> Option<u32> {
+    let encoded = functype(params, results);
+    types.iter().position(|t| *t == encoded).map(|i| i as u32)
 }
 
 fn lower_instruction(
@@ -480,6 +595,7 @@ fn lower_instruction(
     ins: &Instruction,
     regs: &Registers,
     func_index: &HashMap<String, u32>,
+    types: &[Vec<u8>],
     labels: &[String],
     current: usize,
     n: usize,
@@ -556,11 +672,14 @@ fn lower_instruction(
             memarg(out, align, addr.offset);
             match valtype_for_prim(ins.ty.unwrap_or(PrimType::I64)) {
                 Some(VALTYPE_I32) => {
-                    put_u8(out, if is_signed_prim(ins.ty) {
-                        I64_EXTEND_I32_S
-                    } else {
-                        I64_EXTEND_I32_U
-                    });
+                    put_u8(
+                        out,
+                        if is_signed_prim(ins.ty) {
+                            I64_EXTEND_I32_S
+                        } else {
+                            I64_EXTEND_I32_U
+                        },
+                    );
                 }
                 Some(VALTYPE_F32) => put_u8(out, F64_PROMOTE_F32),
                 _ => {}
@@ -609,7 +728,11 @@ fn lower_instruction(
         InstructionKind::Jmp { target } => {
             emit_branch(out, target, labels, current, n, false);
         }
-        InstructionKind::Br { cond, then_label, else_label } => {
+        InstructionKind::Br {
+            cond,
+            then_label,
+            else_label,
+        } => {
             emit_operand(out, cond, regs, VALTYPE_I64, loc, function, diags);
             condition_to_i32(out);
             emit_branch(out, then_label, labels, current, n, true);
@@ -654,13 +777,60 @@ fn lower_instruction(
                 }
             }
         }
-        InstructionKind::CallIndirect { .. } => {
-            diags.push(diag(
-                Trap::UnsupportedInstruction,
-                "call_indirect is not supported",
-                loc,
-                function,
-            ));
+        InstructionKind::CallIndirect { target, args } => {
+            let mut params = Vec::with_capacity(args.len());
+            for arg in args {
+                let storage = operand_storage(Some(&arg.value), regs, None);
+                params.push(storage);
+                emit_operand(out, &arg.value, regs, storage, loc, function, diags);
+            }
+            let results: Vec<u8> = if let Some(&dropped) = regs
+                .indirect_drops
+                .get(&(ins as *const Instruction as usize))
+            {
+                vec![dropped]
+            } else if ins.dest.is_some() {
+                vec![dest_storage]
+            } else {
+                Vec::new()
+            };
+            let type_index = match indirect_type_index(types, &params, &results) {
+                Some(index) => index,
+                None => {
+                    diags.push(diag(
+                        Trap::UnsupportedType,
+                        "indirect call signature is not available",
+                        loc,
+                        function,
+                    ));
+                    return;
+                }
+            };
+            if let Operand::Int(value) = target {
+                if *value < SA_FN_BASE as i128 {
+                    i32_const(out, *value as i32);
+                } else {
+                    emit_operand(out, target, regs, VALTYPE_I64, loc, function, diags);
+                    i64_const(out, SA_FN_BASE as i64);
+                    put_u8(out, I64_SUB);
+                    put_u8(out, I32_WRAP_I64);
+                }
+            } else {
+                emit_operand(out, target, regs, VALTYPE_I64, loc, function, diags);
+                i64_const(out, SA_FN_BASE as i64);
+                put_u8(out, I64_SUB);
+                put_u8(out, I32_WRAP_I64);
+            }
+            put_u8(out, CALL_INDIRECT);
+            put_uleb(out, type_index as u64);
+            put_uleb(out, 0);
+            if ins.dest.is_some()
+                || regs
+                    .indirect_drops
+                    .contains_key(&(ins as *const Instruction as usize))
+            {
+                store_or_drop(out, ins, regs);
+            }
         }
         InstructionKind::Return { value } | InstructionKind::EarlyReturn { value } => {
             if let Some(v) = value {
@@ -716,6 +886,7 @@ pub fn lower_function(
     program: &Program,
     func: &Function,
     func_index: &HashMap<String, u32>,
+    types: &[Vec<u8>],
     entry: &str,
     heap_start: i64,
     diags: &mut Vec<Diagnostic>,
@@ -755,6 +926,7 @@ pub fn lower_function(
                     ins,
                     &regs,
                     func_index,
+                    types,
                     &labels,
                     i,
                     n,
@@ -831,9 +1003,18 @@ mod tests {
 
     #[test]
     fn numeric_opcodes_map() {
-        assert_eq!(numeric_opcode(OpKind::Add, VALTYPE_I64, None), Some(I64_ADD));
-        assert_eq!(numeric_opcode(OpKind::Add, VALTYPE_F64, None), Some(F64_ADD));
-        assert_eq!(numeric_opcode(OpKind::UDiv, VALTYPE_I64, None), Some(I64_DIV_U));
+        assert_eq!(
+            numeric_opcode(OpKind::Add, VALTYPE_I64, None),
+            Some(I64_ADD)
+        );
+        assert_eq!(
+            numeric_opcode(OpKind::Add, VALTYPE_F64, None),
+            Some(F64_ADD)
+        );
+        assert_eq!(
+            numeric_opcode(OpKind::UDiv, VALTYPE_I64, None),
+            Some(I64_DIV_U)
+        );
         assert_eq!(numeric_opcode(OpKind::Eq, VALTYPE_I64, None), Some(I64_EQ));
     }
 }

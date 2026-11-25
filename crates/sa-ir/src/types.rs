@@ -393,6 +393,15 @@ impl ConstValue {
     pub fn is_const(&self) -> bool {
         true
     }
+
+    pub fn vtable_target(&self) -> Option<&str> {
+        match self {
+            Self::Utf8(text) => text
+                .split_once(':')
+                .map(|(_, target)| target.trim_start_matches('@')),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for ConstValue {

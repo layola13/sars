@@ -75,6 +75,29 @@ pub fn memory_section(pages: u32) -> Vec<u8> {
     section(5, &payload)
 }
 
+pub fn table_section(min: u32) -> Vec<u8> {
+    let mut payload = Vec::new();
+    put_uleb(&mut payload, 1);
+    payload.push(0x70);
+    payload.push(0x00);
+    put_uleb(&mut payload, min as u64);
+    section(4, &payload)
+}
+
+pub fn element_section(funcs: &[u32]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    put_uleb(&mut payload, 1);
+    put_uleb(&mut payload, 0);
+    payload.push(0x41);
+    put_sleb(&mut payload, 0);
+    payload.push(0x0b);
+    put_uleb(&mut payload, funcs.len() as u64);
+    for &index in funcs {
+        put_uleb(&mut payload, index as u64);
+    }
+    section(9, &payload)
+}
+
 pub fn export_section(exports: &[Vec<u8>]) -> Vec<u8> {
     section(7, &vec_of(exports))
 }

@@ -3,16 +3,22 @@ mod lower;
 mod opcode;
 mod sections;
 
-pub use crate::leb::{sleb128, uleb128};
 #[cfg(test)]
 use crate::leb::{put_bytes, put_uleb};
+pub use crate::leb::{sleb128, uleb128};
 use crate::opcode::{storage_type, VALTYPE_I64};
 use crate::sections::{
-    code_section, data_section, export_entry, export_section, functype, function_section,
-    import_entry, import_section, locals_vec, memory_section, name_section, type_section,
+    code_section, data_section, element_section, export_entry, export_section, function_section,
+    functype, import_entry, import_section, locals_vec, memory_section, name_section,
+    table_section, type_section,
 };
-use sa_ir::{Diagnostic, FunctionKind, PrimType, Program, Signature, SourceLoc, Trap};
+use sa_ir::{
+    ConstValue, Diagnostic, FunctionKind, InstructionKind, PrimType, Program, Signature, SourceLoc,
+    Trap,
+};
 use std::collections::HashMap;
+
+pub(crate) const SA_FN_BASE: u64 = 0x5341_0000_0000_0000;
 
 #[derive(Debug, Clone)]
 pub struct WasmOptions {
@@ -43,9 +49,24 @@ pub(crate) fn const_layout(program: &Program) -> Vec<ConstSegment> {
     let mut cursor = 1024u32;
     let mut out = Vec::new();
     for constant in &program.consts {
-        let data = match constant.value.bytes() {
-            Some(data) if !data.is_empty() => data,
-            _ => continue,
+        let data = match &constant.value {
+            ConstValue::VTable(entries) => {
+                let mut data = Vec::new();
+                for entry in entries {
+                    let index = entry
+                        .vtable_target()
+                        .and_then(|target| {
+                            program.functions.iter().position(|f| f.sig.name == target)
+                        })
+                        .unwrap_or(0) as u64;
+                    data.extend_from_slice(&(SA_FN_BASE + index).to_le_bytes());
+                }
+                data
+            }
+            value => match value.bytes() {
+                Some(data) if !data.is_empty() => data,
+                _ => continue,
+            },
         };
         cursor = (cursor + 7) & !7;
         out.push(ConstSegment {
@@ -119,6 +140,18 @@ pub fn emit_wasm(program: &Program, opts: &WasmOptions) -> Result<Vec<u8>, Vec<D
     for (i, f) in program.functions.iter().enumerate() {
         func_index.insert(f.sig.name.clone(), extern_count + i as u32);
     }
+    let has_indirect = program
+        .functions
+        .iter()
+        .flat_map(|f| f.all_instructions())
+        .any(|ins| matches!(ins.kind, InstructionKind::CallIndirect { .. }));
+    let table_funcs: Vec<u32> = if has_indirect {
+        (0..program.functions.len())
+            .map(|i| extern_count + i as u32)
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let mut imports = Vec::new();
     for (ext, type_index) in program.externs.iter().zip(extern_types.iter()) {
@@ -142,6 +175,7 @@ pub fn emit_wasm(program: &Program, opts: &WasmOptions) -> Result<Vec<u8>, Vec<D
             program,
             f,
             &func_index,
+            &types,
             entry_name,
             heap_start,
             &mut diags,
@@ -170,7 +204,11 @@ pub fn emit_wasm(program: &Program, opts: &WasmOptions) -> Result<Vec<u8>, Vec<D
             .iter()
             .position(|candidate| std::ptr::eq(candidate, f))
             .unwrap_or(0);
-        exports.push(export_entry(f.sig.display_name(), 0x00, extern_count + position as u32));
+        exports.push(export_entry(
+            f.sig.display_name(),
+            0x00,
+            extern_count + position as u32,
+        ));
     }
     exports.push(export_entry("memory", 0x02, 0));
 
@@ -186,14 +224,18 @@ pub fn emit_wasm(program: &Program, opts: &WasmOptions) -> Result<Vec<u8>, Vec<D
         out.extend_from_slice(&import_section(&imports));
     }
     out.extend_from_slice(&function_section(&func_types));
+    if has_indirect {
+        out.extend_from_slice(&table_section(table_funcs.len() as u32));
+    }
     out.extend_from_slice(&memory_section(opts.memory_pages));
     out.extend_from_slice(&export_section(&exports));
+    if has_indirect {
+        out.extend_from_slice(&element_section(&table_funcs));
+    }
     out.extend_from_slice(&code_section(&bodies));
     if !consts.is_empty() {
-        let segments: Vec<(u32, Vec<u8>)> = consts
-            .iter()
-            .map(|c| (c.addr, c.data.clone()))
-            .collect();
+        let segments: Vec<(u32, Vec<u8>)> =
+            consts.iter().map(|c| (c.addr, c.data.clone())).collect();
         out.extend_from_slice(&data_section(&segments));
     }
     if opts.debug_names {
@@ -206,8 +248,8 @@ pub fn emit_wasm(program: &Program, opts: &WasmOptions) -> Result<Vec<u8>, Vec<D
 mod tests {
     use super::*;
     use sa_ir::{
-        Address, Block, ConstValue, Function, Instruction, InstructionKind, OpKind, Operand,
-        Signature, SourceLoc,
+        Address, Block, ConstDecl, ConstValue, Function, Instruction, InstructionKind, OpKind,
+        Operand, Signature, SourceLoc,
     };
 
     fn sample_program() -> Program {
@@ -428,6 +470,51 @@ mod tests {
     }
 
     #[test]
+    fn call_indirect_adds_table_and_element_sections() {
+        let mut program = sample_program();
+        let mut target_sig = Signature::new("target");
+        target_sig.return_ty = PrimType::I64;
+        let mut target = Function::new(target_sig, SourceLoc::unknown());
+        let mut target_block = Block::new("entry", SourceLoc::unknown());
+        target_block.instrs.push(Instruction::new(
+            InstructionKind::Return {
+                value: Some(Operand::Int(1)),
+            },
+            SourceLoc::unknown(),
+            "return",
+        ));
+        target.blocks.push(target_block);
+        program.functions.push(target);
+        let block = &mut program.functions[0].blocks[0];
+        block.instrs.insert(
+            0,
+            Instruction::new(
+                InstructionKind::CallIndirect {
+                    target: Operand::Int(1),
+                    args: Vec::new(),
+                },
+                SourceLoc::unknown(),
+                "indirect",
+            )
+            .with_dest("x")
+            .with_ty(PrimType::I64),
+        );
+        let bytes = emit_wasm(&program, &WasmOptions::default()).unwrap();
+        assert_eq!(section_ids(&bytes), vec![1, 3, 4, 5, 7, 9, 10, 0]);
+    }
+
+    #[test]
+    fn vtable_consts_are_laid_out() {
+        let mut program = sample_program();
+        program.consts.push(ConstDecl::new(
+            "VT",
+            ConstValue::VTable(vec![ConstValue::Utf8("a:@main".to_string())]),
+        ));
+        let bytes = emit_wasm(&program, &WasmOptions::default()).unwrap();
+        assert!(section_ids(&bytes).contains(&11));
+    }
+
+    #[test]
     fn constants_are_encoded() {
         let mut program = Program::new();
         let mut sig = Signature::new("main");
@@ -435,16 +522,16 @@ mod tests {
         let mut f = Function::new(sig, SourceLoc::unknown());
         let mut block = Block::new("entry", SourceLoc::unknown());
         block.instrs.push(
-            Instruction::new(
-                InstructionKind::Nop,
-                SourceLoc::unknown(),
-                "nop",
-            )
-            .with_ty(PrimType::I64),
+            Instruction::new(InstructionKind::Nop, SourceLoc::unknown(), "nop")
+                .with_ty(PrimType::I64),
         );
-        block
-            .instrs
-            .push(Instruction::new(InstructionKind::Return { value: Some(Operand::Int(624485)) }, SourceLoc::unknown(), "return"));
+        block.instrs.push(Instruction::new(
+            InstructionKind::Return {
+                value: Some(Operand::Int(624485)),
+            },
+            SourceLoc::unknown(),
+            "return",
+        ));
         f.blocks.push(block);
         program.functions.push(f);
         assert!(emit_wasm(&program, &WasmOptions::default()).is_ok());
