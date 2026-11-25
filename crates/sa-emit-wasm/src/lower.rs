@@ -179,7 +179,7 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
     }
     let signatures = vtable_signatures(program);
     for ins in &instrs {
-        if let InstructionKind::CallIndirect { args, .. } = &ins.kind {
+        if let InstructionKind::CallIndirect { target, args } = &ins.kind {
             let arg_storages: Vec<u8> = args
                 .iter()
                 .map(|a| operand_storage(Some(&a.value), &probe, None))
@@ -195,17 +195,34 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
                             .all(|(p, s)| storage_type(Some(p.ty)).unwrap_or(VALTYPE_I64) == *s)
                 })
                 .collect();
-            let result = matches
-                .iter()
+            let resolved = vtable_sig_from_target(target, func, program, 0).filter(|sig| {
+                sig.params.len() == arg_storages.len()
+                    && sig
+                        .params
+                        .iter()
+                        .zip(arg_storages.iter())
+                        .all(|(p, s)| storage_type(Some(p.ty)).unwrap_or(VALTYPE_I64) == *s)
+            });
+            let result = resolved
                 .filter(|sig| !sig.return_value_type().is_void())
                 .map(|sig| storage_type(Some(sig.return_value_type())).unwrap_or(VALTYPE_I64))
-                .next();
+                .or_else(|| {
+                    matches
+                        .iter()
+                        .filter(|sig| !sig.return_value_type().is_void())
+                        .map(|sig| {
+                            storage_type(Some(sig.return_value_type())).unwrap_or(VALTYPE_I64)
+                        })
+                        .next()
+                });
             if let Some(result) = result {
                 if let Some(name) = &ins.dest {
                     if let Some(&index) = map.get(name) {
                         types[index as usize] = result;
                         probe.types[index as usize] = result;
-                        if let Some(sig) = matches.first() {
+                        if let Some(sig) =
+                            resolved.or_else(|| matches.first().copied().map(|v| &**v))
+                        {
                             let ty = sig.return_value_type();
                             ptypes[index as usize] = Some(ty);
                             probe.ptypes[index as usize] = Some(ty);
@@ -243,6 +260,102 @@ fn vtable_signatures(program: &Program) -> Vec<&Signature> {
         }
     }
     out
+}
+
+fn vtable_entry_sig<'a>(
+    entries: &'a [ConstValue],
+    index: usize,
+    program: &'a Program,
+) -> Option<&'a Signature> {
+    entries
+        .get(index)?
+        .vtable_target()
+        .and_then(|target| program.functions.iter().find(|f| f.sig.name == target))
+        .map(|f| &f.sig)
+}
+
+fn vtable_sig_from_const_addr<'a>(
+    base: &Operand,
+    offset: i64,
+    func: &Function,
+    program: &'a Program,
+    depth: usize,
+) -> Option<&'a Signature> {
+    if depth > 8 {
+        return None;
+    }
+    let Operand::Reg(name) = base else {
+        return None;
+    };
+    if let Some(constant) = program.consts.iter().find(|c| c.name == *name) {
+        if let ConstValue::VTable(entries) = &constant.value {
+            return vtable_entry_sig(entries, (offset.max(0) as usize) / 8, program);
+        }
+    }
+    let def = func
+        .all_instructions()
+        .into_iter()
+        .find(|i| i.dest.as_deref() == Some(name.as_str()))?;
+    match &def.kind {
+        InstructionKind::Assign { src }
+        | InstructionKind::Move { src }
+        | InstructionKind::Borrow { src, .. }
+        | InstructionKind::RawCast { src }
+        | InstructionKind::AssumeSafe { src } => {
+            vtable_sig_from_const_addr(src, offset, func, program, depth + 1)
+        }
+        _ => None,
+    }
+}
+
+fn vtable_sig_from_target<'a>(
+    target: &Operand,
+    func: &Function,
+    program: &'a Program,
+    depth: usize,
+) -> Option<&'a Signature> {
+    if depth > 8 {
+        return None;
+    }
+    match target {
+        Operand::Reg(name) => {
+            if let Some(constant) = program.consts.iter().find(|c| c.name == *name) {
+                if let ConstValue::VTable(entries) = &constant.value {
+                    return vtable_entry_sig(entries, 0, program);
+                }
+            }
+            let def = func
+                .all_instructions()
+                .into_iter()
+                .find(|i| i.dest.as_deref() == Some(name.as_str()))?;
+            match &def.kind {
+                InstructionKind::Assign { src }
+                | InstructionKind::Move { src }
+                | InstructionKind::Borrow { src, .. }
+                | InstructionKind::RawCast { src }
+                | InstructionKind::AssumeSafe { src } => {
+                    vtable_sig_from_target(src, func, program, depth + 1)
+                }
+                InstructionKind::Load { addr } => {
+                    vtable_sig_from_const_addr(&addr.base, addr.offset, func, program, depth + 1)
+                }
+                InstructionKind::PtrAdd { base, .. } => {
+                    vtable_sig_from_target(base, func, program, depth + 1)
+                }
+                _ => None,
+            }
+        }
+        Operand::Symbol(name) => program
+            .functions
+            .iter()
+            .find(|f| f.sig.name == *name)
+            .map(|f| &f.sig),
+        Operand::Int(value) if *value >= SA_FN_BASE as i128 => program
+            .functions
+            .get((*value - SA_FN_BASE as i128) as usize)
+            .map(|f| &f.sig),
+        _ => None,
+    }
 }
 
 fn local_get(out: &mut Vec<u8>, index: u32) {
@@ -2402,5 +2515,66 @@ mod tests {
         )]);
         let code = lower_code(&f);
         assert!(code.windows(2).any(|w| w == [ATOMIC_PREFIX, ATOMIC_FENCE]));
+    }
+
+    #[test]
+    fn indirect_call_result_uses_resolved_vtable_signature() {
+        let mut program = Program::new();
+        program.consts.push(sa_ir::ConstDecl::new(
+            "C_VT",
+            ConstValue::VTable(vec![ConstValue::Utf8("invoke:@cb_code".into())]),
+        ));
+        program.consts.push(sa_ir::ConstDecl::new(
+            "V_VT",
+            ConstValue::VTable(vec![ConstValue::Utf8("invoke:@cb_val".into())]),
+        ));
+        for (name, ty) in [("cb_code", PrimType::I64), ("cb_val", PrimType::F64)] {
+            let mut sig = Signature::new(name);
+            sig.params.push(sa_ir::ParamSpec::new(
+                "x",
+                PrimType::I64,
+                sa_ir::CapPrefix::ByValue,
+            ));
+            sig.return_ty = ty;
+            program.functions.push(Function::new(sig, SourceLoc::unknown()));
+        }
+        let mut f = Function::new(Signature::new("main"), SourceLoc::unknown());
+        let mut block = sa_ir::Block::new("entry", SourceLoc::unknown());
+        for (const_name, dest) in [("C_VT", "code"), ("V_VT", "v")] {
+            let t = format!("t_{dest}");
+            let fp = format!("fp_{dest}");
+            block.instrs.push(Instruction::new(
+                InstructionKind::Borrow {
+                    src: Operand::reg(const_name),
+                    mutable: false,
+                },
+                SourceLoc::unknown(),
+                "t = &VT",
+            ).with_dest(t.clone()));
+            block.instrs.push(Instruction::new(
+                InstructionKind::Load {
+                    addr: Address::new(Operand::reg(t), 0),
+                },
+                SourceLoc::unknown(),
+                "fp = load t+0 as ptr",
+            ).with_dest(fp.clone()));
+            block.instrs.push(Instruction::new(
+                InstructionKind::CallIndirect {
+                    target: Operand::reg(fp),
+                    args: vec![sa_ir::CallArg::new(
+                        sa_ir::CapPrefix::ByValue,
+                        Operand::Int(0),
+                    )],
+                },
+                SourceLoc::unknown(),
+                "r = call_indirect fp(z)",
+            ).with_dest(dest));
+        }
+        f.blocks.push(block);
+        let mut diags = Vec::new();
+        let regs = collect_registers(&f, &program, &mut diags);
+        assert!(diags.is_empty());
+        assert_eq!(regs.types[regs.map["code"] as usize], VALTYPE_I64);
+        assert_eq!(regs.types[regs.map["v"] as usize], VALTYPE_F64);
     }
 }
