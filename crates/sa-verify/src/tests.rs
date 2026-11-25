@@ -538,6 +538,75 @@ fn live_borrow_param_without_indirect_dispatch_is_not_a_leak() {
 }
 
 #[test]
+fn unreleased_owned_ptr_param_is_an_exit_leak() {
+    let mut source = function(
+        "consume",
+        vec![block("L_entry", vec![ins(InstructionKind::Return { value: None }, 2)], 1)],
+    );
+    source
+        .sig
+        .params
+        .push(ParamSpec::new("handle", PrimType::Ptr, CapPrefix::ByValue));
+    let errors = verify(&program(vec![source]), &VerifyOptions::default()).unwrap_err();
+    assert!(has_trap(&errors, Trap::MemoryLeak), "{errors:?}");
+    assert!(errors.iter().any(|diagnostic| diagnostic.register.as_deref() == Some("handle")));
+}
+
+#[test]
+fn released_owned_ptr_param_is_not_an_exit_leak() {
+    let mut source = function(
+        "consume",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(InstructionKind::Release { reg: "handle".into() }, 2),
+                ins(InstructionKind::Return { value: None }, 3),
+            ],
+            1,
+        )],
+    );
+    source
+        .sig
+        .params
+        .push(ParamSpec::new("handle", PrimType::Ptr, CapPrefix::ByValue));
+    verify(&program(vec![source]), &VerifyOptions::default()).expect("released param is not a leak");
+}
+
+#[test]
+fn moved_owned_ptr_param_is_not_an_exit_leak() {
+    let mut source = function(
+        "consume",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(InstructionKind::Move { src: Operand::reg("handle") }, 2).with_dest("moved"),
+                ins(InstructionKind::Release { reg: "moved".into() }, 3),
+                ins(InstructionKind::Return { value: None }, 4),
+            ],
+            1,
+        )],
+    );
+    source
+        .sig
+        .params
+        .push(ParamSpec::new("handle", PrimType::Ptr, CapPrefix::Move));
+    verify(&program(vec![source]), &VerifyOptions::default()).expect("moved param is not a leak");
+}
+
+#[test]
+fn live_scalar_param_is_not_an_exit_leak() {
+    let mut source = function(
+        "consume",
+        vec![block("L_entry", vec![ins(InstructionKind::Return { value: None }, 2)], 1)],
+    );
+    source
+        .sig
+        .params
+        .push(ParamSpec::new("n", PrimType::I32, CapPrefix::ByValue));
+    verify(&program(vec![source]), &VerifyOptions::default()).expect("scalars cannot leak");
+}
+
+#[test]
 fn verify_function_checks_only_one_function() {
     let main = function(
         "main",

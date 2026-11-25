@@ -1,10 +1,10 @@
 use crate::state::{FnState, RegKind, RegState};
 use crate::{DiagSink, VerifyOptions};
 use sa_ir::{
-    Capability, Diagnostic, Instruction, InstructionKind, Operand, Program, Signature, SourceLoc,
-    Trap,
+    Capability, CapPrefix, Diagnostic, Instruction, InstructionKind, Operand, PrimType, Program,
+    Signature, SourceLoc, Trap,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct RuleCtx<'a> {
     pub program: &'a Program,
@@ -504,15 +504,24 @@ fn handle_call(
     signature.map(|sig| sig.return_fallible).unwrap_or(false)
 }
 
+fn is_owned_pointer_param(ctx: &RuleCtx, name: &str) -> bool {
+    ctx.signature.params.iter().any(|param| {
+        param.name == name
+            && matches!(param.cap, CapPrefix::ByValue | CapPrefix::Move)
+            && matches!(param.ty, PrimType::Ptr)
+    })
+}
+
 fn check_leaks(ctx: &mut RuleCtx, state: &FnState, loc: &SourceLoc) {
     if !ctx.opts.check_leaks {
         return;
     }
-    let indirect_dispatch = ctx
+    let current = ctx
         .program
         .functions
         .iter()
-        .find(|function| function.name() == ctx.func_name)
+        .find(|function| function.name() == ctx.func_name);
+    let indirect_dispatch = current
         .map(|function| {
             function
                 .all_instructions()
@@ -520,6 +529,25 @@ fn check_leaks(ctx: &mut RuleCtx, state: &FnState, loc: &SourceLoc) {
                 .any(|instruction| matches!(instruction.kind, InstructionKind::CallIndirect { .. }))
         })
         .unwrap_or(false);
+    let call_arg_regs: HashSet<String> = current
+        .map(|function| {
+            function
+                .all_instructions()
+                .iter()
+                .flat_map(|instruction| match &instruction.kind {
+                    InstructionKind::Call { args, .. }
+                    | InstructionKind::CallIndirect { args, .. } => args
+                        .iter()
+                        .filter_map(|arg| match &arg.value {
+                            Operand::Reg(name) => Some(name.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let mut leaked: Vec<String> = state
         .regs
         .iter()
@@ -528,6 +556,13 @@ fn check_leaks(ctx: &mut RuleCtx, state: &FnState, loc: &SourceLoc) {
                 return false;
             }
             if matches!(reg_state, RegState::Owned { kind: RegKind::Alloc }) {
+                return true;
+            }
+            if matches!(reg_state, RegState::Owned { kind: RegKind::Param })
+                && !state.borrow_params.contains(*name)
+                && !call_arg_regs.contains(*name)
+                && is_owned_pointer_param(ctx, name)
+            {
                 return true;
             }
             indirect_dispatch
