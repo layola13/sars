@@ -241,7 +241,7 @@ pub fn emit_function(
 fn dst(ins: &Instruction) -> String {
     match &ins.dest {
         Some(d) => FuncCtx::reg_name(d),
-        None => "sa_tmp".to_string(),
+        None => FuncCtx::reg_name("sa_tmp"),
     }
 }
 

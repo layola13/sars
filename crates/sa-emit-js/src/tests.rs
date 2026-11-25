@@ -479,6 +479,29 @@ fn npm_bind_emits_import_and_wrapper() {
 }
 
 #[test]
+fn no_dest_writes_use_normalized_sa_tmp() {
+    let p = program(vec![function("main", vec![block("entry", vec![
+        ins(InstructionKind::Alloc { size: Operand::Int(3) }),
+        ins(InstructionKind::Return { value: Some(Operand::Int(0)) }),
+    ])])]);
+    let js = emit_js(&p, &JsOptions::default()).unwrap();
+    assert!(js.contains("let r_sa_tmp = 0;"), "{}", &js);
+    assert!(js.contains("r_sa_tmp = sa_alloc(3)"), "{}", &js);
+    let bytes = js.as_bytes();
+    let needle = b"sa_tmp";
+    let mut i = 0;
+    while i + needle.len() <= bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            let prev = if i == 0 { b' ' } else { bytes[i - 1] };
+            assert_eq!(prev, b'_', "bare sa_tmp at byte {i}: {}", &js);
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+}
+
+#[test]
 fn unused_imports_placeholder() {
     let _ = ImportDecl::new("x", SourceLoc::unknown());
 }
