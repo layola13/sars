@@ -6,7 +6,7 @@ mod sections;
 #[cfg(test)]
 use crate::leb::{put_bytes, put_uleb};
 pub use crate::leb::{sleb128, uleb128};
-use crate::opcode::{storage_type, VALTYPE_I64};
+use crate::opcode::{storage_type, VALTYPE_I32, VALTYPE_I64};
 use crate::sections::{
     code_section, data_section, element_section, export_entry, export_section, function_section,
     functype, import_entry, import_section, locals_vec, memory_section, name_section,
@@ -92,6 +92,9 @@ fn signature_type(sig: &Signature, diags: &mut Vec<Diagnostic>) -> Vec<u8> {
         }
     }
     let mut results = Vec::new();
+    if sig.return_fallible {
+        results.push(VALTYPE_I32);
+    }
     if !sig.return_ty.is_void() {
         let return_ty = sig.return_value_type();
         if return_ty == PrimType::V128 {
@@ -407,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn fallible_call_is_rejected() {
+    fn fallible_call_emits_status_and_value_results() {
         let mut program = sample_program();
         let mut ext = Signature::new("sa_maybe");
         ext.return_fallible = true;
@@ -421,8 +424,37 @@ mod tests {
             SourceLoc::unknown(),
             "call",
         ));
-        let err = emit_wasm(&program, &WasmOptions::default()).unwrap_err();
-        assert!(err.iter().any(|d| d.trap == Trap::UnsupportedType));
+        let bytes = emit_wasm(&program, &WasmOptions::default()).unwrap();
+        let mut found = false;
+        let mut pos = 8;
+        while pos < bytes.len() {
+            let id = bytes[pos];
+            pos += 1;
+            let len = decode_uleb(&bytes, &mut pos) as usize;
+            let body = &bytes[pos..pos + len];
+            pos += len;
+            if id != 1 {
+                continue;
+            }
+            let mut t = 0;
+            let count = decode_uleb(body, &mut t);
+            for _ in 0..count {
+                assert_eq!(body[t], 0x60);
+                t += 1;
+                let nparams = decode_uleb(body, &mut t) as usize;
+                t += nparams;
+                let nresults = decode_uleb(body, &mut t) as usize;
+                let results = &body[t..t + nresults];
+                t += nresults;
+                if results == [VALTYPE_I32, VALTYPE_I64] {
+                    found = true;
+                }
+            }
+        }
+        assert!(
+            found,
+            "fallible extern must have i32 status + i64 value results"
+        );
     }
 
     #[test]

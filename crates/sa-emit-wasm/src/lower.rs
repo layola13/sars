@@ -16,6 +16,7 @@ pub struct FunctionCode {
 struct Registers {
     map: HashMap<String, u32>,
     types: Vec<u8>,
+    status: HashMap<String, u32>,
     scratch: [u32; 2],
     consts: HashMap<String, u32>,
     indirect_drops: HashMap<usize, u8>,
@@ -81,10 +82,17 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
         .into_iter()
         .map(|segment| (segment.name, segment.addr))
         .collect();
+    let mut status = HashMap::new();
+    for name in map.keys() {
+        let index = types.len() as u32;
+        types.push(VALTYPE_I32);
+        status.insert(name.clone(), index);
+    }
     let mut indirect_drops = HashMap::new();
     let mut probe = Registers {
         map: map.clone(),
         types: types.clone(),
+        status: status.clone(),
         scratch,
         consts: consts.clone(),
         indirect_drops: HashMap::new(),
@@ -161,6 +169,7 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
     Registers {
         map,
         types,
+        status,
         scratch,
         consts,
         indirect_drops,
@@ -197,6 +206,26 @@ fn local_set(out: &mut Vec<u8>, index: u32) {
 fn store_or_drop(out: &mut Vec<u8>, ins: &Instruction, regs: &Registers) {
     if let Some(name) = &ins.dest {
         if let Some(&index) = regs.map.get(name) {
+            local_set(out, index);
+            return;
+        }
+    }
+    put_u8(out, DROP);
+}
+
+fn emit_status(out: &mut Vec<u8>, op: &Operand, regs: &Registers) {
+    if let Operand::Reg(name) = op {
+        if let Some(&index) = regs.status.get(name) {
+            local_get(out, index);
+            return;
+        }
+    }
+    i32_const(out, 0);
+}
+
+fn set_status(out: &mut Vec<u8>, dest: Option<&str>, regs: &Registers) {
+    if let Some(name) = dest {
+        if let Some(&index) = regs.status.get(name) {
             local_set(out, index);
             return;
         }
@@ -776,6 +805,7 @@ fn lower_instruction(
     program: &Program,
     function: &str,
     ret_storage: u8,
+    return_fallible: bool,
     diags: &mut Vec<Diagnostic>,
 ) {
     let loc = &ins.loc;
@@ -930,15 +960,6 @@ fn lower_instruction(
                     return;
                 }
             };
-            if sig.return_fallible {
-                diags.push(diag(
-                    Trap::UnsupportedType,
-                    "fallible call signatures are not supported",
-                    loc,
-                    function,
-                ));
-                return;
-            }
             for (arg, param) in args.iter().zip(sig.params.iter()) {
                 let storage = storage_type(Some(param.ty)).unwrap_or(VALTYPE_I64);
                 emit_operand(out, &arg.value, regs, storage, loc, function, diags);
@@ -946,7 +967,12 @@ fn lower_instruction(
             if let Some(&index) = func_index.get(target) {
                 put_u8(out, CALL);
                 put_uleb(out, index as u64);
-                if !sig.return_ty.is_void() {
+                if sig.return_fallible {
+                    if !sig.return_ty.is_void() {
+                        store_or_drop(out, ins, regs);
+                    }
+                    set_status(out, ins.dest.as_deref(), regs);
+                } else if !sig.return_ty.is_void() {
                     store_or_drop(out, ins, regs);
                 }
             }
@@ -1007,12 +1033,47 @@ fn lower_instruction(
             }
         }
         InstructionKind::Return { value } | InstructionKind::EarlyReturn { value } => {
-            if let Some(v) = value {
+            if return_fallible {
+                if let Some(v) = value {
+                    emit_status(out, v, regs);
+                    emit_operand(out, v, regs, ret_storage, loc, function, diags);
+                } else {
+                    i32_const(out, 0);
+                }
+                put_u8(out, RETURN);
+                put_u8(out, UNREACHABLE);
+            } else if let Some(v) = value {
                 emit_operand(out, v, regs, ret_storage, loc, function, diags);
                 put_u8(out, RETURN);
                 put_u8(out, UNREACHABLE);
             } else {
                 emit_branch(out, "exit", labels, cf, current, false);
+            }
+        }
+        InstructionKind::Try { src } => {
+            let status_index = match src {
+                Operand::Reg(name) => regs.status.get(name).copied(),
+                _ => None,
+            };
+            if let Some(index) = status_index {
+                local_get(out, index);
+                put_u8(out, IF);
+                out.push(0x40);
+                if return_fallible {
+                    local_get(out, index);
+                    emit_operand(out, src, regs, ret_storage, loc, function, diags);
+                    put_u8(out, RETURN);
+                    put_u8(out, UNREACHABLE);
+                } else {
+                    put_u8(out, UNREACHABLE);
+                }
+                put_u8(out, END);
+            }
+            if ins.dest.is_some() {
+                emit_operand(out, src, regs, dest_storage, loc, function, diags);
+                set_dest(out);
+                i32_const(out, 0);
+                set_status(out, ins.dest.as_deref(), regs);
             }
         }
         InstructionKind::Assign { src }
@@ -1021,11 +1082,17 @@ fn lower_instruction(
         | InstructionKind::AssumeSafe { src }
         | InstructionKind::Borrow { src, .. }
         | InstructionKind::AssumeBorrow { src, .. }
-        | InstructionKind::Try { src }
         | InstructionKind::VaArg { src } => {
             if ins.dest.is_some() {
                 emit_operand(out, src, regs, dest_storage, loc, function, diags);
                 set_dest(out);
+                if matches!(
+                    ins.kind,
+                    InstructionKind::Assign { .. } | InstructionKind::Move { .. }
+                ) {
+                    emit_status(out, src, regs);
+                    set_status(out, ins.dest.as_deref(), regs);
+                }
             }
         }
         InstructionKind::PtrAdd { base, offset } => {
@@ -1080,6 +1147,10 @@ pub fn lower_function(
         put_u8(&mut code, I64_STORE);
         memarg(&mut code, 3, 0);
     }
+    for &index in regs.status.values() {
+        i32_const(&mut code, 0);
+        local_set(&mut code, index);
+    }
     let blocks = &func.blocks;
     let n = blocks.len();
     let labels: Vec<String> = blocks.iter().map(|b| b.label.clone()).collect();
@@ -1112,6 +1183,7 @@ pub fn lower_function(
                     program,
                     func.name(),
                     ret_storage,
+                    func.sig.return_fallible,
                     diags,
                 );
             }
@@ -1120,6 +1192,9 @@ pub fn lower_function(
             }
         }
         put_u8(&mut code, END);
+    }
+    if func.sig.return_fallible {
+        i32_const(&mut code, 0);
     }
     if !func.sig.return_ty.is_void() {
         emit_int_const(&mut code, 0, ret_storage);
@@ -1184,9 +1259,71 @@ mod tests {
         assert!(code.contains(&LOOP));
         assert!(code.windows(2).any(|w| w[0] == BR && w[1] == 0));
         assert!(!code.windows(2).any(|w| w[0] == DROP && w[1] == UNREACHABLE));
-        let opens = code.iter().filter(|&&b| b == LOOP || b == BLOCK).count();
+        let opens = code
+            .windows(2)
+            .filter(|w| (w[0] == LOOP || w[0] == BLOCK) && w[1] == 0x40)
+            .count();
         let ends = code.iter().filter(|&&b| b == END).count();
         assert_eq!(opens + 1, ends);
+    }
+
+    #[test]
+    fn fallible_call_and_try_emit_status_checks() {
+        let mut program = Program::new();
+        let mut ext = Signature::new("sa_maybe");
+        ext.return_fallible = true;
+        ext.return_ty = PrimType::I64;
+        program.externs.push(ext);
+        let mut sig = Signature::new("main");
+        sig.return_fallible = true;
+        sig.return_ty = PrimType::I32;
+        let mut f = Function::new(sig, SourceLoc::unknown());
+        let mut block = sa_ir::Block::new("entry", SourceLoc::unknown());
+        block.instrs.push(
+            Instruction::new(
+                InstructionKind::Call {
+                    target: "sa_maybe".to_string(),
+                    args: Vec::new(),
+                },
+                SourceLoc::unknown(),
+                "call",
+            )
+            .with_dest("r")
+            .with_ty(PrimType::I64),
+        );
+        block.instrs.push(
+            Instruction::new(
+                InstructionKind::Try {
+                    src: Operand::reg("r"),
+                },
+                SourceLoc::unknown(),
+                "?",
+            )
+            .with_dest("v")
+            .with_ty(PrimType::I64),
+        );
+        f.blocks.push(block);
+        program.functions.push(f);
+
+        let mut func_index = HashMap::new();
+        func_index.insert("sa_maybe".to_string(), 0u32);
+        let types = vec![functype(&[], &[VALTYPE_I32, VALTYPE_I64])];
+        let mut diags = Vec::new();
+        let code = lower_function(
+            &program,
+            &program.functions[0],
+            &func_index,
+            &types,
+            "",
+            0,
+            &mut diags,
+        )
+        .code;
+        assert!(diags.is_empty());
+        assert!(code.windows(2).any(|w| w[0] == CALL && w[1] == 0));
+        assert!(code.contains(&IF));
+        assert!(code.contains(&RETURN));
+        assert!(code.iter().filter(|&&b| b == LOCAL_SET).count() >= 4);
     }
 
     #[test]
