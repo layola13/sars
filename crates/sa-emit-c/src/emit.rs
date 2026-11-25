@@ -737,6 +737,15 @@ fn unsupported(ctx: &FnCtx<'_>, diags: &mut Vec<Diagnostic>, loc: &SourceLoc, wh
     ));
 }
 
+fn inline_asm(text: &str) -> Option<(String, bool)> {
+    let after = text.find("asm")? + 3;
+    let rest = &text[after..];
+    let sideeffect = rest.contains("sideeffect") || rest.contains("volatile");
+    let start = rest.find('"')? + 1;
+    let end = start + rest[start..].find('"')?;
+    Some((rest[start..end].to_string(), sideeffect))
+}
+
 fn emit_instruction(
     ctx: &mut FnCtx<'_>,
     out: &mut String,
@@ -1048,11 +1057,27 @@ fn emit_instruction(
                 ));
             }
         }
-        InstructionKind::Native { .. }
-        | InstructionKind::VaStart
-        | InstructionKind::VaArg { .. }
-        | InstructionKind::VaEnd => {
-            unsupported(ctx, diags, &ins.loc, "variadic / native intrinsics");
+        InstructionKind::Native { text } => {
+            match inline_asm(text) {
+                Some((body, sideeffect)) => {
+                    let escaped = body
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"")
+                        .replace('\n', "\\n")
+                        .replace('\r', "\\r");
+                    if sideeffect {
+                        out.push_str(&format!(
+                            "  __asm__ __volatile__(\"{escaped}\" ::: \"memory\");\n"
+                        ));
+                    } else {
+                        out.push_str(&format!("  __asm__(\"{escaped}\");\n"));
+                    }
+                }
+                None => unsupported(ctx, diags, &ins.loc, "inline assembly"),
+            }
+        }
+        InstructionKind::VaStart | InstructionKind::VaArg { .. } | InstructionKind::VaEnd => {
+            unsupported(ctx, diags, &ins.loc, "variadic intrinsics");
         }
     }
 }

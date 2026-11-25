@@ -272,6 +272,22 @@ fn rejects_npm_bind() {
 }
 
 #[test]
+fn emits_sideeffect_inline_asm() {
+    let mut p = hello_program();
+    let ins = Instruction::new(
+        InstructionKind::Native {
+            text: "call void asm sideeffect \"\", \"\"()".to_string(),
+        },
+        loc(),
+        "asm",
+    );
+    p.functions[0].blocks[0].instrs.insert(0, ins);
+    let c = emit_c(&p, &COptions::default()).unwrap();
+    assert!(c.contains("__asm__ __volatile__(\"\" ::: \"memory\");"), "{c}");
+    assert!(!c.contains("inline assembly is not implemented"), "{c}");
+}
+
+#[test]
 fn emits_vtable_const_and_call_indirect() {
     let mut p = hello_program();
     p.consts.push(ConstDecl::new(
