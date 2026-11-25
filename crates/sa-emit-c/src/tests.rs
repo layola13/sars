@@ -253,25 +253,48 @@ fn rejects_npm_bind() {
 }
 
 #[test]
-fn rejects_call_indirect() {
+fn emits_vtable_const_and_call_indirect() {
     let mut p = hello_program();
-    if let Some(f) = p.functions.first_mut() {
-        if let Some(b) = f.blocks.first_mut() {
-            b.instrs.insert(
-                0,
-                Instruction::new(
-                    InstructionKind::CallIndirect {
-                        target: Operand::reg("fp"),
-                        args: vec![],
-                    },
-                    loc(),
-                    "call_indirect",
-                ).with_dest("v"),
-            );
-        }
-    }
-    let errs = emit_c(&p, &COptions::default()).unwrap_err();
-    assert!(errs.iter().any(|d| d.trap == Trap::UnsupportedInstruction));
+    p.consts.push(ConstDecl::new(
+        "VT",
+        ConstValue::VTable(vec![ConstValue::Utf8("draw:@draw".to_string())]),
+    ));
+    let mut sig = Signature::new("draw");
+    sig.params.push(ParamSpec::new("self", PrimType::Ptr, CapPrefix::Borrow));
+    sig.return_ty = PrimType::I32;
+    let mut f = Function::new(sig, loc());
+    let mut b = Block::new("L_ENTRY", loc());
+    b.instrs.push(Instruction::new(
+        InstructionKind::Assign { src: Operand::Symbol("VT".to_string()) },
+        loc(),
+        "t",
+    ).with_dest("t"));
+    b.instrs.push(Instruction::new(
+        InstructionKind::Load {
+            addr: sa_ir::Address::new(Operand::reg("t"), 0),
+        },
+        loc(),
+        "fp",
+    ).with_dest("fp").with_ty(PrimType::Ptr));
+    b.instrs.push(Instruction::new(
+        InstructionKind::CallIndirect {
+            target: Operand::reg("fp"),
+            args: vec![CallArg::new(CapPrefix::Borrow, Operand::reg("t"))],
+        },
+        loc(),
+        "call_indirect",
+    ).with_dest("v"));
+    b.instrs.push(Instruction::new(
+        InstructionKind::Return { value: Some(Operand::reg("v")) },
+        loc(),
+        "return",
+    ));
+    f.blocks.push(b);
+    p.functions.push(f);
+    let c = emit_c(&p, &COptions::default()).unwrap();
+    assert!(c.contains("static const uint64_t sa_c1_VT[]"));
+    assert!(c.contains("(uint64_t)(uintptr_t)&sars_f1_draw"));
+    assert!(c.contains("((int32_t (*)(uint8_t *))(uintptr_t)("));
 }
 
 #[test]

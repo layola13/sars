@@ -1,7 +1,7 @@
 use crate::runtime;
 use sa_ir::{
-    AtomicOrdering, AtomicRmwOp, ConstValue, Diagnostic, Function, Instruction, InstructionKind,
-    OpKind, Operand, PrimType, Program, Signature, SourceLoc, Trap,
+    AtomicOrdering, AtomicRmwOp, CallArg, ConstValue, Diagnostic, Function, Instruction,
+    InstructionKind, OpKind, Operand, PrimType, Program, Signature, SourceLoc, Trap,
 };
 use std::collections::HashMap;
 
@@ -254,6 +254,14 @@ impl<'a> FnCtx<'a> {
                 ctx.types.insert(dest.to_string(), ty);
             }
         }
+        for ins in &instrs {
+            if let InstructionKind::CallIndirect { target, args } = &ins.kind {
+                let (_, ret) = indirect_types(&ctx, ins, target, args);
+                if let Some(dest) = ins.dest.as_deref() {
+                    ctx.types.insert(dest.to_string(), ret);
+                }
+            }
+        }
         ctx
     }
 
@@ -312,7 +320,7 @@ impl<'a> FnCtx<'a> {
         match op {
             Operand::Reg(name) => {
                 if let Some(c) = self.names.consts.get(name) {
-                    return c.clone();
+                    return self.const_expr(name, c, hint);
                 }
                 if let Some(r) = self.regs.get(name) {
                     return r.clone();
@@ -330,7 +338,7 @@ impl<'a> FnCtx<'a> {
             }
             Operand::Symbol(name) => {
                 if let Some(c) = self.names.consts.get(name) {
-                    return c.clone();
+                    return self.const_expr(name, c, hint);
                 }
                 if let Some(d) = self.program.find_def(name) {
                     return self.names.intern(d.as_bytes().to_vec());
@@ -359,6 +367,21 @@ impl<'a> FnCtx<'a> {
         }
     }
 
+    fn const_expr(&self, name: &str, sym: &str, hint: PrimType) -> String {
+        let is_vtable = self
+            .program
+            .consts
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| matches!(c.value, ConstValue::VTable(_)))
+            .unwrap_or(false);
+        if is_vtable && hint.is_pointer() {
+            format!("((uint8_t *)({sym}))")
+        } else {
+            sym.to_string()
+        }
+    }
+
     fn addr_expr(&mut self, addr: &sa_ir::Address, diags: &mut Vec<Diagnostic>) -> String {
         let base = self.expr(&addr.base, PrimType::Ptr, diags);
         if addr.offset == 0 {
@@ -378,6 +401,179 @@ fn call_signature<'a>(ctx: &FnCtx<'a>, target: &str) -> Option<&'a Signature> {
         .function(target)
         .map(|f| &f.sig)
         .or_else(|| ctx.program.extern_sig(target))
+}
+
+fn vtable_entry_sig<'a>(
+    entries: &'a [ConstValue],
+    slot: usize,
+    program: &'a Program,
+) -> Option<&'a Signature> {
+    let target = entries.get(slot)?.vtable_target()?;
+    program
+        .functions
+        .iter()
+        .find(|f| f.sig.name == target)
+        .map(|f| &f.sig)
+}
+
+fn same_operand(a: &Operand, b: &Operand) -> bool {
+    match (a, b) {
+        (Operand::Reg(x), Operand::Reg(y)) => x == y,
+        (Operand::Symbol(x), Operand::Symbol(y)) => x == y,
+        _ => false,
+    }
+}
+
+fn instr_def<'a>(func: &'a Function, name: &str) -> Option<&'a Instruction> {
+    func.all_instructions()
+        .into_iter()
+        .find(|i| i.dest.as_deref() == Some(name))
+}
+
+fn stored_const_at<'a>(
+    program: &'a Program,
+    func: &'a Function,
+    base: &Operand,
+    offset: i64,
+    depth: usize,
+) -> Option<(&'a str, i64)> {
+    for ins in func.all_instructions() {
+        if let InstructionKind::Store { addr, value } = &ins.kind {
+            if addr.offset == offset && same_operand(&addr.base, base) {
+                if let Some(found) = const_ptr(program, func, value, 0, depth + 1) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    let Operand::Reg(name) = base else {
+        return None;
+    };
+    let index = func.sig.params.iter().position(|p| p.name == *name)?;
+    for caller in &program.functions {
+        for ins in caller.all_instructions() {
+            if let InstructionKind::Call { target, args } = &ins.kind {
+                if *target == func.sig.name {
+                    if let Some(arg) = args.get(index) {
+                        if let Some(found) =
+                            const_ptr(program, caller, &arg.value, offset, depth + 1)
+                        {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn const_ptr<'a>(
+    program: &'a Program,
+    func: &'a Function,
+    op: &Operand,
+    offset: i64,
+    depth: usize,
+) -> Option<(&'a str, i64)> {
+    if depth > 8 {
+        return None;
+    }
+    match op {
+        Operand::Symbol(name) => program
+            .consts
+            .iter()
+            .find(|c| c.name == *name)
+            .map(|c| (c.name.as_str(), offset)),
+        Operand::Reg(name) => {
+            if let Some(c) = program.consts.iter().find(|c| c.name == *name) {
+                return Some((c.name.as_str(), offset));
+            }
+            if let Some(ins) = instr_def(func, name) {
+                match &ins.kind {
+                    InstructionKind::Assign { src }
+                    | InstructionKind::Move { src }
+                    | InstructionKind::Borrow { src, .. }
+                    | InstructionKind::RawCast { src }
+                    | InstructionKind::AssumeSafe { src }
+                    | InstructionKind::AssumeBorrow { src, .. } => {
+                        return const_ptr(program, func, src, offset, depth + 1);
+                    }
+                    InstructionKind::PtrAdd { base, offset: add } => {
+                        let add = match add {
+                            Operand::Int(v) => i64::try_from(*v).unwrap_or(0),
+                            _ => 0,
+                        };
+                        return const_ptr(program, func, base, offset.saturating_add(add), depth + 1);
+                    }
+                    InstructionKind::Load { addr } => {
+                        let next_offset = offset.saturating_add(addr.offset);
+                        return stored_const_at(program, func, &addr.base, next_offset, depth + 1)
+                            .or_else(|| const_ptr(program, func, &addr.base, next_offset, depth + 1));
+                    }
+                    _ => {}
+                }
+            }
+            stored_const_at(program, func, op, offset, depth + 1)
+        }
+        _ => None,
+    }
+}
+
+fn indirect_signature<'a>(
+    program: &'a Program,
+    func: &'a Function,
+    target: &Operand,
+) -> Option<&'a Signature> {
+    if let Some((name, offset)) = const_ptr(program, func, target, 0, 0) {
+        if let Some(constant) = program.consts.iter().find(|c| c.name == name) {
+            if let ConstValue::VTable(entries) = &constant.value {
+                if let Some(sig) = vtable_entry_sig(entries, (offset.max(0) / 8) as usize, program) {
+                    return Some(sig);
+                }
+            }
+        }
+    }
+    match target {
+        Operand::Symbol(name) => program
+            .functions
+            .iter()
+            .find(|f| f.sig.name == *name)
+            .map(|f| &f.sig),
+        _ => None,
+    }
+}
+
+fn indirect_types(
+    ctx: &FnCtx<'_>,
+    ins: &Instruction,
+    target: &Operand,
+    args: &[CallArg],
+) -> (Vec<PrimType>, PrimType) {
+    if let Some(sig) = indirect_signature(ctx.program, ctx.func, target) {
+        return (
+            sig.params.iter().map(|p| p.ty).collect(),
+            sig.return_value_type(),
+        );
+    }
+    let arg_types = args
+        .iter()
+        .map(|a| {
+            ctx.type_of_operand(Some(&a.value)).unwrap_or(match a.cap {
+                sa_ir::CapPrefix::Borrow | sa_ir::CapPrefix::Raw => PrimType::Ptr,
+                _ => PrimType::I64,
+            })
+        })
+        .collect();
+    let ret = ins
+        .ty
+        .or_else(|| {
+            ins.dest
+                .as_deref()
+                .and_then(|d| ctx.types.get(d).copied())
+        })
+        .filter(|t| !t.is_void())
+        .unwrap_or(PrimType::I64);
+    (arg_types, ret)
 }
 
 fn op_expression(
@@ -633,8 +829,30 @@ fn emit_instruction(
                 assign(out, call);
             }
         }
-        InstructionKind::CallIndirect { .. } => {
-            unsupported(ctx, diags, &ins.loc, "call_indirect / vtable dispatch");
+        InstructionKind::CallIndirect { target, args } => {
+            let (param_types, ret_ty) = indirect_types(ctx, ins, target, args);
+            let rendered = args
+                .iter()
+                .zip(param_types.iter())
+                .map(|(arg, ty)| ctx.expr(&arg.value, *ty, diags))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let fnptr = if ret_ty.is_void() {
+                format!("void (*)({})", param_types.iter().map(|t| c_type(*t)).collect::<Vec<_>>().join(", "))
+            } else {
+                format!(
+                    "{} (*)({})",
+                    c_type(ret_ty),
+                    param_types.iter().map(|t| c_type(*t)).collect::<Vec<_>>().join(", ")
+                )
+            };
+            let target_expr = ctx.expr(target, PrimType::Ptr, diags);
+            let call = format!("(({fnptr})(uintptr_t)({target_expr}))({rendered})");
+            if ret_ty.is_void() || dest.is_none() {
+                out.push_str(&format!("  {call};\n"));
+            } else {
+                assign(out, call);
+            }
         }
         InstructionKind::Return { value } | InstructionKind::EarlyReturn { value } => {
             let ret_ty = ctx.func.sig.return_value_type();
@@ -896,24 +1114,35 @@ fn static_bytes(out: &mut String, sym: &str, bytes: &[u8]) {
     out.push_str("0};\n");
 }
 
-fn const_data(program: &Program, names: &Names, diags: &mut Vec<Diagnostic>) -> String {
+fn const_data(program: &Program, names: &Names, _diags: &mut Vec<Diagnostic>) -> String {
     let mut out = String::new();
     for c in &program.consts {
         let sym = match names.consts.get(&c.name) {
             Some(s) => s,
             None => continue,
         };
-        let bytes = match &c.value {
-            ConstValue::VTable(_) => {
-                diags.push(Diagnostic::new(
-                    Trap::VTableSignatureMismatch,
-                    format!("vtable const {} is not supported by the C backend", c.name),
-                    SourceLoc::unknown(),
-                ));
-                continue;
-            }
-            value => value.bytes().unwrap_or_default(),
-        };
+        if let ConstValue::VTable(entries) = &c.value {
+            let slots = entries
+                .iter()
+                .map(|entry| {
+                    entry
+                        .vtable_target()
+                        .and_then(|target| {
+                            program
+                                .functions
+                                .iter()
+                                .find(|f| f.sig.name == target)
+                                .map(|f| names.funcs.get(&f.sig.name).cloned().unwrap_or_else(|| ident(&f.sig.name)))
+                        })
+                        .map(|sym| format!("(uint64_t)(uintptr_t)&{sym}"))
+                        .unwrap_or_else(|| "0".to_string())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("static const uint64_t {sym}[] = {{{slots}}};\n"));
+            continue;
+        }
+        let bytes = c.value.bytes().unwrap_or_default();
         static_bytes(&mut out, sym, &bytes);
     }
     out
@@ -985,6 +1214,8 @@ pub fn emit(program: &Program, opts: &crate::COptions) -> Result<String, Vec<Dia
     }
     let mut names = Names::new(program);
     names.intern_operands(program);
+    let mut prototypes_src = String::new();
+    prototypes(&mut prototypes_src, program, &names);
     let data = const_data(program, &names, &mut diags);
     if !diags.is_empty() {
         return Err(diags);
@@ -1007,11 +1238,11 @@ pub fn emit(program: &Program, opts: &crate::COptions) -> Result<String, Vec<Dia
     let mut out = String::new();
     out.push_str("/* generated by sars sa-emit-c - native C backend */\n");
     out.push_str(&runtime::runtime_source(opts.heap_size));
+    out.push_str(&prototypes_src);
     out.push_str(&data);
     for (name, bytes) in &names.anon_out {
         static_bytes(&mut out, name, bytes);
     }
-    prototypes(&mut out, program, &names);
     out.push_str(&func_code);
     out.push_str(&format!(
         "int main(void) {{ return ({})({}()); }}\n",
