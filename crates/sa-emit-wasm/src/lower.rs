@@ -3,8 +3,8 @@ use crate::opcode::*;
 use crate::sections::functype;
 use crate::SA_FN_BASE;
 use sa_ir::{
-    Address, ConstValue, Diagnostic, Function, Instruction, InstructionKind, OpKind, Operand,
-    PrimType, Program, Signature, SourceLoc, Trap,
+    Address, AtomicRmwOp, ConstValue, Diagnostic, Function, Instruction, InstructionKind, OpKind,
+    Operand, PrimType, Program, Signature, SourceLoc, Trap,
 };
 use std::collections::HashMap;
 
@@ -18,7 +18,7 @@ struct Registers {
     types: Vec<u8>,
     ptypes: Vec<Option<PrimType>>,
     status: HashMap<String, u32>,
-    scratch: [u32; 2],
+    scratch: [u32; 5],
     consts: HashMap<String, u32>,
     indirect_drops: HashMap<usize, u8>,
 }
@@ -79,6 +79,27 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
         },
         {
             let name = "__wa_scratch_1".to_string();
+            map.insert(name, types.len() as u32);
+            ptypes.push(None);
+            types.push(VALTYPE_I64);
+            types.len() as u32 - 1
+        },
+        {
+            let name = "__wa_scratch_2".to_string();
+            map.insert(name, types.len() as u32);
+            ptypes.push(None);
+            types.push(VALTYPE_I64);
+            types.len() as u32 - 1
+        },
+        {
+            let name = "__wa_scratch_3".to_string();
+            map.insert(name, types.len() as u32);
+            ptypes.push(None);
+            types.push(VALTYPE_I64);
+            types.len() as u32 - 1
+        },
+        {
+            let name = "__wa_scratch_4".to_string();
             map.insert(name, types.len() as u32);
             ptypes.push(None);
             types.push(VALTYPE_I64);
@@ -557,6 +578,350 @@ fn emit_address(
 fn memarg(out: &mut Vec<u8>, align: u32, offset: i64) {
     put_uleb(out, align as u64);
     put_uleb(out, offset as u64);
+}
+
+fn atomic_memarg(out: &mut Vec<u8>, code: u8, align: u32, offset: i64) {
+    put_u8(out, ATOMIC_PREFIX);
+    put_u8(out, code);
+    memarg(out, align, offset);
+}
+
+fn atomic_extend_result(out: &mut Vec<u8>, ty: Option<PrimType>) {
+    match valtype_for_prim(ty.unwrap_or(PrimType::I64)) {
+        Some(VALTYPE_I32) => {
+            put_u8(
+                out,
+                if is_signed_prim(ty) {
+                    I64_EXTEND_I32_S
+                } else {
+                    I64_EXTEND_I32_U
+                },
+            );
+        }
+        _ => {}
+    }
+}
+
+fn atomic_narrow_sign_extend(out: &mut Vec<u8>, ty: Option<PrimType>) {
+    match ty {
+        Some(PrimType::I8) => put_u8(out, I32_EXTEND8_S),
+        Some(PrimType::I16) => put_u8(out, I32_EXTEND16_S),
+        _ => {}
+    }
+}
+
+fn atomic_value_to_op(out: &mut Vec<u8>, storage: u8, wide: bool) {
+    let mem = if wide { VALTYPE_I64 } else { VALTYPE_I32 };
+    match (storage, mem) {
+        (VALTYPE_I64, VALTYPE_I32) => put_u8(out, I32_WRAP_I64),
+        (VALTYPE_F64, VALTYPE_I32) => {
+            put_u8(out, I64_TRUNC_F64_S);
+            put_u8(out, I32_WRAP_I64);
+        }
+        (VALTYPE_F64, VALTYPE_I64) => put_u8(out, I64_TRUNC_F64_S),
+        _ => {}
+    }
+}
+
+fn zero_statuses(out: &mut Vec<u8>, ins: &Instruction, regs: &Registers) {
+    for name in ins.all_dests() {
+        if let Some(&index) = regs.status.get(name) {
+            i32_const(out, 0);
+            local_set(out, index);
+        }
+    }
+}
+
+fn emit_atomic_load(
+    out: &mut Vec<u8>,
+    ins: &Instruction,
+    ty: Option<PrimType>,
+    addr: &Address,
+    regs: &Registers,
+    loc: &SourceLoc,
+    function: &str,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let Some((code, align)) = atomic_access_opcode(ty, true) else {
+        diags.push(diag(
+            Trap::UnsupportedType,
+            "atomic load type is not supported",
+            loc,
+            function,
+        ));
+        return;
+    };
+    emit_address(out, addr, regs, loc, function, diags);
+    atomic_memarg(out, code, align, addr.offset);
+    atomic_narrow_sign_extend(out, ty);
+    atomic_extend_result(out, ty);
+    store_or_drop(out, ins, regs);
+    zero_statuses(out, ins, regs);
+}
+
+fn emit_atomic_store(
+    out: &mut Vec<u8>,
+    ty: Option<PrimType>,
+    addr: &Address,
+    value: &Operand,
+    regs: &Registers,
+    loc: &SourceLoc,
+    function: &str,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let Some((code, align)) = atomic_access_opcode(ty, false) else {
+        diags.push(diag(
+            Trap::UnsupportedType,
+            "atomic store type is not supported",
+            loc,
+            function,
+        ));
+        return;
+    };
+    emit_address(out, addr, regs, loc, function, diags);
+    let wide = valtype_for_prim(ty.unwrap_or(PrimType::I64)) == Some(VALTYPE_I64);
+    let storage = operand_storage(Some(value), regs, ty);
+    emit_operand(out, value, regs, storage, loc, function, diags);
+    atomic_value_to_op(out, storage, wide);
+    atomic_memarg(out, code, align, addr.offset);
+}
+
+fn emit_cmpxchg(
+    out: &mut Vec<u8>,
+    ins: &Instruction,
+    ty: Option<PrimType>,
+    addr: &Address,
+    expected: &Operand,
+    replacement: &Operand,
+    regs: &Registers,
+    loc: &SourceLoc,
+    function: &str,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let Some((_, align)) = atomic_access_opcode(ty, true) else {
+        diags.push(diag(
+            Trap::UnsupportedType,
+            "compare-exchange type is not supported",
+            loc,
+            function,
+        ));
+        return;
+    };
+    if prim_bits(ty) < 32 {
+        diags.push(diag(
+            Trap::UnsupportedType,
+            "narrow compare-exchange is not supported",
+            loc,
+            function,
+        ));
+        return;
+    }
+    let wide = valtype_for_prim(ty.unwrap_or(PrimType::I64)) == Some(VALTYPE_I64);
+    let exp_storage = operand_storage(Some(expected), regs, ty);
+    let rep_storage = operand_storage(Some(replacement), regs, ty);
+    emit_address(out, addr, regs, loc, function, diags);
+    emit_operand(out, expected, regs, exp_storage, loc, function, diags);
+    atomic_value_to_op(out, exp_storage, wide);
+    if !wide {
+        put_u8(out, I64_EXTEND_I32_U);
+    }
+    local_set(out, regs.scratch[0]);
+    if wide {
+        local_get(out, regs.scratch[0]);
+    } else {
+        local_get(out, regs.scratch[0]);
+        put_u8(out, I32_WRAP_I64);
+    }
+    emit_operand(out, replacement, regs, rep_storage, loc, function, diags);
+    atomic_value_to_op(out, rep_storage, wide);
+    atomic_memarg(out, atomic_cas_opcode(ty), align, addr.offset);
+    atomic_extend_result(out, ty);
+    local_set(out, regs.scratch[1]);
+    local_get(out, regs.scratch[1]);
+    store_or_drop(out, ins, regs);
+    local_get(out, regs.scratch[1]);
+    local_get(out, regs.scratch[0]);
+    put_u8(out, I64_EQ);
+    put_u8(out, I64_EXTEND_I32_U);
+    if let Some(name) = ins.extra_dests.first() {
+        if let Some(&index) = regs.map.get(name.as_str()) {
+            local_set(out, index);
+        } else {
+            put_u8(out, DROP);
+        }
+    } else {
+        put_u8(out, DROP);
+    }
+    zero_statuses(out, ins, regs);
+}
+
+fn atomic_cas_minmax(
+    out: &mut Vec<u8>,
+    ins: &Instruction,
+    ty: Option<PrimType>,
+    addr: &Address,
+    value: &Operand,
+    cmp: u8,
+    regs: &Registers,
+    loc: &SourceLoc,
+    function: &str,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let Some((load_code, align)) = atomic_access_opcode(ty, true) else {
+        diags.push(diag(
+            Trap::UnsupportedType,
+            "atomic min/max type is not supported",
+            loc,
+            function,
+        ));
+        return;
+    };
+    if prim_bits(ty) < 32 {
+        diags.push(diag(
+            Trap::UnsupportedType,
+            "narrow atomic min/max is not supported",
+            loc,
+            function,
+        ));
+        return;
+    }
+    let wide = valtype_for_prim(ty.unwrap_or(PrimType::I64)) == Some(VALTYPE_I64);
+    emit_address(out, addr, regs, loc, function, diags);
+    put_u8(out, I64_EXTEND_I32_U);
+    local_set(out, regs.scratch[0]);
+    let storage = operand_storage(Some(value), regs, ty);
+    emit_operand(out, value, regs, storage, loc, function, diags);
+    if wide {
+        atomic_value_to_op(out, storage, true);
+    } else {
+        atomic_value_to_op(out, storage, false);
+        atomic_extend_result(out, ty);
+    }
+    local_set(out, regs.scratch[1]);
+    put_u8(out, BLOCK);
+    out.push(0x40);
+    put_u8(out, LOOP);
+    out.push(0x40);
+    if wide {
+        local_get(out, regs.scratch[0]);
+    } else {
+        local_get(out, regs.scratch[0]);
+        put_u8(out, I32_WRAP_I64);
+    }
+    atomic_memarg(out, load_code, align, addr.offset);
+    if wide {
+        atomic_extend_result(out, ty);
+    } else {
+        atomic_narrow_sign_extend(out, ty);
+        atomic_extend_result(out, ty);
+    }
+    local_set(out, regs.scratch[2]);
+    local_get(out, regs.scratch[2]);
+    local_get(out, regs.scratch[1]);
+    local_get(out, regs.scratch[2]);
+    local_get(out, regs.scratch[1]);
+    put_u8(out, cmp);
+    put_u8(out, SELECT);
+    local_set(out, regs.scratch[3]);
+    if wide {
+        local_get(out, regs.scratch[0]);
+    } else {
+        local_get(out, regs.scratch[0]);
+        put_u8(out, I32_WRAP_I64);
+    }
+    local_get(out, regs.scratch[2]);
+    if !wide {
+        put_u8(out, I32_WRAP_I64);
+    }
+    local_get(out, regs.scratch[3]);
+    if !wide {
+        put_u8(out, I32_WRAP_I64);
+    }
+    atomic_memarg(out, atomic_cas_opcode(ty), align, addr.offset);
+    atomic_extend_result(out, ty);
+    local_set(out, regs.scratch[4]);
+    local_get(out, regs.scratch[4]);
+    local_get(out, regs.scratch[2]);
+    put_u8(out, I64_EQ);
+    put_u8(out, I32_EQZ);
+    put_u8(out, BR_IF);
+    put_uleb(out, 0);
+    put_u8(out, END);
+    put_u8(out, END);
+    local_get(out, regs.scratch[4]);
+    store_or_drop(out, ins, regs);
+    zero_statuses(out, ins, regs);
+}
+
+fn emit_atomic_rmw(
+    out: &mut Vec<u8>,
+    ins: &Instruction,
+    ty: Option<PrimType>,
+    op: AtomicRmwOp,
+    addr: &Address,
+    value: &Operand,
+    regs: &Registers,
+    loc: &SourceLoc,
+    function: &str,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let cmp = match op {
+        AtomicRmwOp::Umin => Some(I64_LT_U),
+        AtomicRmwOp::Umax => Some(I64_GT_U),
+        AtomicRmwOp::Smin => Some(I64_LT_S),
+        AtomicRmwOp::Smax => Some(I64_GT_S),
+        _ => None,
+    };
+    if let Some(cmp) = cmp {
+        atomic_cas_minmax(out, ins, ty, addr, value, cmp, regs, loc, function, diags);
+        return;
+    }
+    let Some((_, align)) = atomic_access_opcode(ty, true) else {
+        diags.push(diag(
+            Trap::UnsupportedType,
+            "atomic operation type is not supported",
+            loc,
+            function,
+        ));
+        return;
+    };
+    let Some(code) = atomic_rmw_opcode(ty, op) else {
+        diags.push(diag(
+            Trap::UnsupportedInstruction,
+            "atomic operation is not supported",
+            loc,
+            function,
+        ));
+        return;
+    };
+    if prim_bits(ty) < 32 {
+        diags.push(diag(
+            Trap::UnsupportedType,
+            "narrow atomic operation is not supported",
+            loc,
+            function,
+        ));
+        return;
+    }
+    let wide = valtype_for_prim(ty.unwrap_or(PrimType::I64)) == Some(VALTYPE_I64);
+    emit_address(out, addr, regs, loc, function, diags);
+    let storage = operand_storage(Some(value), regs, ty);
+    emit_operand(out, value, regs, storage, loc, function, diags);
+    atomic_value_to_op(out, storage, wide);
+    if !wide {
+        put_u8(out, I64_EXTEND_I32_U);
+    }
+    local_set(out, regs.scratch[0]);
+    if wide {
+        local_get(out, regs.scratch[0]);
+    } else {
+        local_get(out, regs.scratch[0]);
+        put_u8(out, I32_WRAP_I64);
+    }
+    atomic_memarg(out, code, align, addr.offset);
+    atomic_extend_result(out, ty);
+    store_or_drop(out, ins, regs);
+    zero_statuses(out, ins, regs);
 }
 
 #[derive(Clone, Copy)]
@@ -1360,17 +1725,38 @@ fn lower_instruction(
             put_u8(out, I64_ADD);
             store_or_drop(out, ins, regs);
         }
-        InstructionKind::AtomicLoad { .. }
-        | InstructionKind::AtomicStore { .. }
-        | InstructionKind::Cmpxchg { .. }
-        | InstructionKind::AtomicRmw { .. }
-        | InstructionKind::Fence { .. } => {
-            diags.push(diag(
-                Trap::UnsupportedInstruction,
-                "atomic operations require target atomics support",
+        InstructionKind::AtomicLoad { addr, .. } => {
+            emit_atomic_load(out, ins, ins.ty, addr, regs, loc, function, diags);
+        }
+        InstructionKind::AtomicStore { addr, value, .. } => {
+            emit_atomic_store(out, ins.ty, addr, value, regs, loc, function, diags);
+        }
+        InstructionKind::Cmpxchg {
+            addr,
+            expected,
+            replacement,
+            ..
+        } => {
+            emit_cmpxchg(
+                out,
+                ins,
+                ins.ty,
+                addr,
+                expected,
+                replacement,
+                regs,
                 loc,
                 function,
-            ));
+                diags,
+            );
+        }
+        InstructionKind::AtomicRmw { op, addr, value, .. } => {
+            emit_atomic_rmw(out, ins, ins.ty, *op, addr, value, regs, loc, function, diags);
+        }
+        InstructionKind::Fence { .. } => {
+            put_u8(out, ATOMIC_PREFIX);
+            put_u8(out, ATOMIC_FENCE);
+            put_u8(out, 0);
         }
         InstructionKind::Panic { .. } => put_u8(out, UNREACHABLE),
         InstructionKind::Take { addr } => {
@@ -1910,5 +2296,111 @@ mod tests {
         ]);
         let code = lower_code(&f);
         assert!(code.contains(&I64_LOAD));
+    }
+
+    #[test]
+    fn atomic_load_store_emit_prefixed_instructions() {
+        let mut f = simple_function(vec![
+            Instruction::new(
+                InstructionKind::AtomicLoad {
+                    addr: Address::new(Operand::reg("p"), 0),
+                    order: sa_ir::AtomicOrdering::Acquire,
+                },
+                SourceLoc::unknown(),
+                "v = atomic_load p+0 acquire as i32",
+            )
+            .with_dest("v")
+            .with_ty(PrimType::I32),
+            Instruction::new(
+                InstructionKind::AtomicStore {
+                    addr: Address::new(Operand::reg("p"), 0),
+                    value: Operand::Int(1),
+                    order: sa_ir::AtomicOrdering::Release,
+                },
+                SourceLoc::unknown(),
+                "atomic_store p+0, 1 release as i32",
+            )
+            .with_ty(PrimType::I32),
+        ]);
+        f.locals.push("p".into());
+        let code = lower_code(&f);
+        assert!(code.windows(2).any(|w| w == [ATOMIC_PREFIX, I32_ATOMIC_LOAD]));
+        assert!(code.windows(2).any(|w| w == [ATOMIC_PREFIX, I32_ATOMIC_STORE]));
+    }
+
+    #[test]
+    fn cmpxchg_emits_old_and_ok() {
+        let mut f = simple_function(vec![
+            Instruction::new(
+                InstructionKind::Cmpxchg {
+                    addr: Address::new(Operand::reg("p"), 0),
+                    expected: Operand::Int(0),
+                    replacement: Operand::Int(1),
+                    order: sa_ir::AtomicOrdering::SeqCst,
+                },
+                SourceLoc::unknown(),
+                "old, ok = cmpxchg p+0, 0, 1 seq_cst as i32",
+            )
+            .with_dest("old")
+            .with_extra_dests(["ok"])
+            .with_ty(PrimType::I32),
+        ]);
+        f.locals.push("p".into());
+        let code = lower_code(&f);
+        assert!(code.windows(2).any(|w| w == [ATOMIC_PREFIX, I32_ATOMIC_RMW_CMPXCHG]));
+        assert!(code.contains(&I64_EQ));
+    }
+
+    #[test]
+    fn atomic_rmw_add_and_minmax_emit_full_semantics() {
+        let mut add = simple_function(vec![Instruction::new(
+            InstructionKind::AtomicRmw {
+                op: AtomicRmwOp::Add,
+                addr: Address::new(Operand::reg("p"), 0),
+                value: Operand::Int(3),
+                order: sa_ir::AtomicOrdering::SeqCst,
+            },
+            SourceLoc::unknown(),
+            "v = atomic_rmw add p+0, 3 seq_cst as i32",
+        )
+        .with_dest("v")
+        .with_ty(PrimType::I32)]);
+        add.locals.push("p".into());
+        assert!(lower_code(&add)
+            .windows(2)
+            .any(|w| w == [ATOMIC_PREFIX, I32_ATOMIC_RMW_ADD]));
+
+        let mut min = simple_function(vec![Instruction::new(
+            InstructionKind::AtomicRmw {
+                op: AtomicRmwOp::Umin,
+                addr: Address::new(Operand::reg("p"), 0),
+                value: Operand::Int(3),
+                order: sa_ir::AtomicOrdering::SeqCst,
+            },
+            SourceLoc::unknown(),
+            "v = atomic_rmw umin p+0, 3 seq_cst as i32",
+        )
+        .with_dest("v")
+        .with_ty(PrimType::I32)]);
+        min.locals.push("p".into());
+        let code = lower_code(&min);
+        assert!(code.windows(2).any(|w| w == [ATOMIC_PREFIX, I32_ATOMIC_LOAD]));
+        assert!(code.windows(2).any(|w| w == [ATOMIC_PREFIX, I32_ATOMIC_RMW_CMPXCHG]));
+        assert!(code.contains(&LOOP));
+        assert!(code.contains(&SELECT));
+        assert!(code.contains(&I64_LT_U));
+    }
+
+    #[test]
+    fn fence_emits_atomic_fence() {
+        let f = simple_function(vec![Instruction::new(
+            InstructionKind::Fence {
+                order: sa_ir::AtomicOrdering::SeqCst,
+            },
+            SourceLoc::unknown(),
+            "fence seq_cst",
+        )]);
+        let code = lower_code(&f);
+        assert!(code.windows(2).any(|w| w == [ATOMIC_PREFIX, ATOMIC_FENCE]));
     }
 }

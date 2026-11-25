@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn atomic_instruction_is_rejected() {
+    fn atomic_instruction_is_emitted() {
         let mut program = sample_program();
         program.functions[0].blocks[0].instrs.push(Instruction::new(
             InstructionKind::Fence {
@@ -405,8 +405,13 @@ mod tests {
             SourceLoc::unknown(),
             "fence",
         ));
-        let err = emit_wasm(&program, &WasmOptions::default()).unwrap_err();
-        assert!(err.iter().any(|d| d.trap == Trap::UnsupportedInstruction));
+        let bytes = emit_wasm(&program, &WasmOptions::default()).unwrap();
+        assert!(bytes.windows(2).any(|w| {
+            w == [
+                crate::opcode::ATOMIC_PREFIX,
+                crate::opcode::ATOMIC_FENCE,
+            ]
+        }));
     }
 
     #[test]

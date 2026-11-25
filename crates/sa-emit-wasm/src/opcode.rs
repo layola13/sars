@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use sa_ir::PrimType;
+use sa_ir::{AtomicRmwOp, PrimType};
 
 pub const VALTYPE_I32: u8 = 0x7f;
 pub const VALTYPE_I64: u8 = 0x7e;
@@ -142,6 +142,33 @@ pub const F64_REINTERPRET_I64: u8 = 0xbf;
 pub const I64_EXTEND8_S: u8 = 0xc2;
 pub const I64_EXTEND16_S: u8 = 0xc3;
 pub const I64_EXTEND32_S: u8 = 0xc4;
+pub const I32_EXTEND8_S: u8 = 0xc0;
+pub const I32_EXTEND16_S: u8 = 0xc1;
+
+pub const ATOMIC_PREFIX: u8 = 0xfe;
+pub const ATOMIC_FENCE: u8 = 0x03;
+pub const I32_ATOMIC_LOAD: u8 = 0x10;
+pub const I64_ATOMIC_LOAD: u8 = 0x11;
+pub const I32_ATOMIC_LOAD8_U: u8 = 0x12;
+pub const I32_ATOMIC_LOAD16_U: u8 = 0x13;
+pub const I32_ATOMIC_STORE: u8 = 0x17;
+pub const I64_ATOMIC_STORE: u8 = 0x18;
+pub const I32_ATOMIC_STORE8: u8 = 0x19;
+pub const I32_ATOMIC_STORE16: u8 = 0x1a;
+pub const I32_ATOMIC_RMW_ADD: u8 = 0x1e;
+pub const I64_ATOMIC_RMW_ADD: u8 = 0x1f;
+pub const I32_ATOMIC_RMW_SUB: u8 = 0x25;
+pub const I64_ATOMIC_RMW_SUB: u8 = 0x26;
+pub const I32_ATOMIC_RMW_AND: u8 = 0x2c;
+pub const I64_ATOMIC_RMW_AND: u8 = 0x2d;
+pub const I32_ATOMIC_RMW_OR: u8 = 0x33;
+pub const I64_ATOMIC_RMW_OR: u8 = 0x34;
+pub const I32_ATOMIC_RMW_XOR: u8 = 0x3a;
+pub const I64_ATOMIC_RMW_XOR: u8 = 0x3b;
+pub const I32_ATOMIC_RMW_XCHG: u8 = 0x41;
+pub const I64_ATOMIC_RMW_XCHG: u8 = 0x42;
+pub const I32_ATOMIC_RMW_CMPXCHG: u8 = 0x48;
+pub const I64_ATOMIC_RMW_CMPXCHG: u8 = 0x49;
 
 pub fn valtype_for_prim(ty: PrimType) -> Option<u8> {
     match ty {
@@ -210,6 +237,91 @@ pub fn store_opcode(ty: Option<PrimType>) -> Option<(u8, u32)> {
         VALTYPE_F64 => (F64_STORE, 3),
         _ => (I64_STORE, 3),
     })
+}
+
+pub fn atomic_access_opcode(ty: Option<PrimType>, load: bool) -> Option<(u8, u32)> {
+    let ty = ty.unwrap_or(PrimType::I64);
+    if ty.is_float() || ty == PrimType::Void || ty == PrimType::V128 {
+        return None;
+    }
+    Some(match (load, ty) {
+        (true, PrimType::I1 | PrimType::I8 | PrimType::U8) => (I32_ATOMIC_LOAD8_U, 0),
+        (true, PrimType::I16 | PrimType::U16) => (I32_ATOMIC_LOAD16_U, 1),
+        (true, PrimType::I32 | PrimType::U32) => (I32_ATOMIC_LOAD, 2),
+        (false, PrimType::I1 | PrimType::I8 | PrimType::U8) => (I32_ATOMIC_STORE8, 0),
+        (false, PrimType::I16 | PrimType::U16) => (I32_ATOMIC_STORE16, 1),
+        (false, PrimType::I32 | PrimType::U32) => (I32_ATOMIC_STORE, 2),
+        (true, _) => (I64_ATOMIC_LOAD, 3),
+        (false, _) => (I64_ATOMIC_STORE, 3),
+    })
+}
+
+pub fn atomic_rmw_opcode(ty: Option<PrimType>, op: AtomicRmwOp) -> Option<u8> {
+    let wide = matches!(
+        ty.unwrap_or(PrimType::I64),
+        PrimType::I64 | PrimType::U64 | PrimType::Ptr | PrimType::BlobHandle
+    );
+    if ty.map(|t| t.is_float()).unwrap_or(false) {
+        return None;
+    }
+    Some(match op {
+        AtomicRmwOp::Add => {
+            if wide {
+                I64_ATOMIC_RMW_ADD
+            } else {
+                I32_ATOMIC_RMW_ADD
+            }
+        }
+        AtomicRmwOp::Sub => {
+            if wide {
+                I64_ATOMIC_RMW_SUB
+            } else {
+                I32_ATOMIC_RMW_SUB
+            }
+        }
+        AtomicRmwOp::And => {
+            if wide {
+                I64_ATOMIC_RMW_AND
+            } else {
+                I32_ATOMIC_RMW_AND
+            }
+        }
+        AtomicRmwOp::Or => {
+            if wide {
+                I64_ATOMIC_RMW_OR
+            } else {
+                I32_ATOMIC_RMW_OR
+            }
+        }
+        AtomicRmwOp::Xor => {
+            if wide {
+                I64_ATOMIC_RMW_XOR
+            } else {
+                I32_ATOMIC_RMW_XOR
+            }
+        }
+        AtomicRmwOp::Xchg => {
+            if wide {
+                I64_ATOMIC_RMW_XCHG
+            } else {
+                I32_ATOMIC_RMW_XCHG
+            }
+        }
+        AtomicRmwOp::Umin | AtomicRmwOp::Umax | AtomicRmwOp::Smin | AtomicRmwOp::Smax => {
+            return None
+        }
+    })
+}
+
+pub fn atomic_cas_opcode(ty: Option<PrimType>) -> u8 {
+    if matches!(
+        ty.unwrap_or(PrimType::I64),
+        PrimType::I64 | PrimType::U64 | PrimType::Ptr | PrimType::BlobHandle
+    ) {
+        I64_ATOMIC_RMW_CMPXCHG
+    } else {
+        I32_ATOMIC_RMW_CMPXCHG
+    }
 }
 
 #[cfg(test)]
