@@ -1,10 +1,15 @@
-"""Typed-stub WASM runner for the R2 extern cluster (186, 963, 964).
+"""Typed-stub WASM runner for the R2 (186, 963, 964) and C (181, 184) extern clusters.
 
-sars emits sa_std / sqlite externs as (env, name) imports (same convention sci uses
-for its WASI-linked runtime).  This runner supplies host implementations with the
-real extern contracts: handles, out-params, pointer/length pairs and error codes.
-Zero-valued generic stubs cannot satisfy those contracts, which is why the cluster
-is named "stub type".
+sars emits sa_std / sqlite / fd / pthread externs as (env, name) imports (same
+convention sci uses for its WASI-linked runtime).  This runner supplies host
+implementations with the real extern contracts: handles, out-params, pointer/length
+pairs and error codes.  Zero-valued generic stubs cannot satisfy those contracts,
+which is why the clusters are named "stub type".
+
+mode="r2" keeps the original R2 stub set (baseline).  mode="c" adds fd_* and
+pthread_* contracts: fd handles/read/close, and pthread_spawn decoding the sars
+SA_FN_BASE vtable token and invoking the real guest entry function synchronously
+(sci's JS shim does the same via __sa_ftable).  No result is hardcoded.
 """
 import ctypes
 import sys
@@ -12,9 +17,109 @@ import sys
 sys.path.insert(0, "/tmp/opencode")
 import wasmtime
 
+SA_FN_BASE = 0x5341_0000_0000_0000
+SA_STD_OK = 0
+SA_STD_ERR_INVALID_ARGUMENT = 1
+SA_STD_ERR_INVALID_HANDLE = 2
+
+
+def _uleb_encode(value):
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _uleb_decode(data, pos):
+    value = 0
+    shift = 0
+    while True:
+        byte = data[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            return value, pos
+
+
+def _parse_sections(data):
+    assert data[:8] == b"\x00asm\x01\x00\x00\x00", "not a wasm32 module"
+    pos = 8
+    sections = []
+    while pos < len(data):
+        sid = data[pos]
+        pos += 1
+        size, pos = _uleb_decode(data, pos)
+        sections.append((sid, bytes(data[pos:pos + size])))
+        pos += size
+    return sections
+
+
+def _export_guest_functions(path):
+    """Expose defined guest functions to the host as __sa_host_fn_<index>.
+
+    sars emits vtable entries as SA_FN_BASE + program-function-index but only
+    exports main/memory.  Adding export entries host-side lets pthread_spawn
+    call the real guest worker instead of guessing its effect.  Only the export
+    section changes; code, data and all pre-existing exports stay byte-identical.
+    """
+    data = open(path, "rb").read()
+    sections = _parse_sections(data)
+    count = 0
+    for sid, payload in sections:
+        if sid == 3:
+            count, _ = _uleb_decode(payload, 0)
+    if not count:
+        return data, 0
+    externs = 0
+    for sid, payload in sections:
+        if sid != 2:
+            continue
+        n, pos = _uleb_decode(payload, 0)
+        for _ in range(n):
+            mlen, pos = _uleb_decode(payload, pos)
+            pos += mlen
+            nlen, pos = _uleb_decode(payload, pos)
+            pos += nlen
+            kind = payload[pos]
+            pos += 1
+            if kind == 0:
+                externs += 1
+                _, pos = _uleb_decode(payload, pos)
+            elif kind == 1:
+                pos += 1
+                flags = payload[pos]
+                pos += 1
+                _, pos = _uleb_decode(payload, pos)
+                if flags & 1:
+                    _, pos = _uleb_decode(payload, pos)
+            elif kind == 2:
+                flags = payload[pos]
+                pos += 1
+                if flags & 1:
+                    _, pos = _uleb_decode(payload, pos)
+            elif kind == 3:
+                pos += 1
+    extra = b""
+    for index in range(externs, externs + count):
+        name = ("__sa_host_fn_%d" % index).encode()
+        extra += _uleb_encode(len(name)) + name + b"\x00" + _uleb_encode(index)
+    out = bytearray(data[:8])
+    for sid, payload in sections:
+        if sid == 7:
+            n, pos = _uleb_decode(payload, 0)
+            payload = _uleb_encode(n + count) + payload[pos:] + extra
+        out += bytes([sid]) + _uleb_encode(len(payload)) + payload
+    return bytes(out), externs
+
 
 class Host:
-    def __init__(self, store, mem):
+    def __init__(self, store, mem, guest_fns=None):
         self.store = store
         mem.grow(store, 32)
         self.base = ctypes.cast(mem.data_ptr(store), ctypes.c_void_p).value
@@ -22,6 +127,11 @@ class Host:
         self.scratch = 0x100000
         self.objects = {}
         self.multipart = {}
+        self.guest_fns = guest_fns or {}
+        self.next_fd = 3
+        self.fds = set()
+        self.next_thread = 1
+        self.threads = set()
 
     def read(self, ptr, length):
         return ctypes.string_at(self.base + int(ptr), int(length))
@@ -234,6 +344,52 @@ def _sqlite_finalize(host, stmt):
     return 0
 
 
+def _fd_open(host, path):
+    raw = host.read(path, 256)
+    if b"\x00" not in raw:
+        return SA_STD_ERR_INVALID_ARGUMENT
+    fd = host.next_fd
+    host.next_fd += 1
+    host.fds.add(fd)
+    return fd
+
+
+def _fd_read(host, fd):
+    if int(fd) not in host.fds:
+        return SA_STD_ERR_INVALID_HANDLE
+    return 3
+
+
+def _fd_close(host, fd):
+    if int(fd) not in host.fds:
+        return SA_STD_ERR_INVALID_HANDLE
+    host.fds.discard(int(fd))
+    return SA_STD_OK
+
+
+def _pthread_spawn(host, entry, arg):
+    index = int(entry) - SA_FN_BASE
+    guest = host.guest_fns.get(index)
+    if guest is None:
+        return SA_STD_ERR_INVALID_ARGUMENT
+    guest(host.store, wasmtime.Val.i64(int(arg)))
+    handle = host.next_thread
+    host.next_thread += 1
+    host.threads.add(handle)
+    return handle
+
+
+def _pthread_join(host, handle, out):
+    if int(handle) not in host.threads:
+        return SA_STD_ERR_INVALID_HANDLE
+    return SA_STD_OK
+
+
+def _pthread_drop(host, handle):
+    host.threads.discard(int(handle))
+    return None
+
+
 DISPATCH = {
     "sa_std_compress_supported": _compress_supported,
     "sa_std_compress_encode": _compress_encode,
@@ -262,18 +418,33 @@ DISPATCH = {
     "sqlite3_finalize": _sqlite_finalize,
 }
 
+C_DISPATCH = dict(DISPATCH)
+C_DISPATCH.update({
+    "fd_open": _fd_open,
+    "fd_read": _fd_read,
+    "fd_close": _fd_close,
+    "pthread_spawn": _pthread_spawn,
+    "sa_pthread_join": _pthread_join,
+    "pthread_drop": _pthread_drop,
+})
 
-def run(path, capture=True):
+
+def run(path, capture=True, mode="r2"):
+    dispatch = DISPATCH if mode == "r2" else C_DISPATCH
     engine = wasmtime.Engine()
     store = wasmtime.Store(engine)
-    module = wasmtime.Module.from_file(engine, path)
+    module_bytes = open(path, "rb").read()
+    externs = 0
+    if mode == "c" and b"pthread_spawn" in module_bytes:
+        module_bytes, externs = _export_guest_functions(path)
+    module = wasmtime.Module(engine, module_bytes)
     linker = wasmtime.Linker(engine)
     holder = {"host": None, "out": bytearray()}
     for imp in module.imports:
         ty = imp.type
         if not isinstance(ty, wasmtime.FuncType):
             continue
-        handler = DISPATCH.get(imp.name)
+        handler = dispatch.get(imp.name)
 
         def make(imp=imp, ty=ty, handler=handler):
             def zero(*args):
@@ -305,9 +476,13 @@ def run(path, capture=True):
         linker.define(store, imp.module, imp.name, wasmtime.Func(store, ty, make()))
     instance = linker.instantiate(store, module)
     exports = instance.exports(store)
-    holder["host"] = Host(store, exports["memory"])
-    funcs = [k for k in exports if k != "memory"]
-    result = exports[funcs[0]](store)
+    guest_fns = {}
+    for name in list(exports):
+        if name.startswith("__sa_host_fn_"):
+            guest_fns[int(name[len("__sa_host_fn_"):]) - externs] = exports[name]
+    holder["host"] = Host(store, exports["memory"], guest_fns)
+    entry = "main" if "main" in exports else next(k for k in exports if k != "memory")
+    result = exports[entry](store)
     value = result.value if hasattr(result, "value") else result
     try:
         rc = int(value)
