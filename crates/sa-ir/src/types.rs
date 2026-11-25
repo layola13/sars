@@ -386,6 +386,16 @@ impl ConstValue {
         match self {
             Self::Bytes(b) => Some(b.clone()),
             Self::Utf8(s) => Some(s.as_bytes().to_vec()),
+            Self::Bool(v) => Some(vec![*v as u8]),
+            Self::Int(v) => Some(v.to_le_bytes().to_vec()),
+            Self::Float(v) => Some(v.to_le_bytes().to_vec()),
+            Self::Aggregate(values) => {
+                let mut out = Vec::new();
+                for value in values {
+                    out.extend_from_slice(&value.bytes()?);
+                }
+                Some(out)
+            }
             _ => None,
         }
     }
@@ -434,5 +444,25 @@ impl ConstDecl {
             value,
             ty: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_const_flattens_field_bytes() {
+        let value = ConstValue::Aggregate(vec![
+            ConstValue::Bytes(vec![1, 0, 0, 0]),
+            ConstValue::Bytes(vec![2, 0, 0, 0]),
+            ConstValue::Bytes(vec![3, 0, 0, 0]),
+        ]);
+        assert_eq!(
+            value.bytes(),
+            Some(vec![1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0])
+        );
+        let nested = ConstValue::Aggregate(vec![ConstValue::Aggregate(vec![ConstValue::Bool(true)])]);
+        assert_eq!(nested.bytes(), Some(vec![1]));
     }
 }
