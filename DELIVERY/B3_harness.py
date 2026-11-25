@@ -53,10 +53,15 @@ def run(path):
             res = f(store)
         except wasmtime.Trap:
             return 2002
-        if not res:
+        if res is None:
             return 0
+        if isinstance(res, (list, tuple)):
+            if not res:
+                return 0
+            res = res[-1]
+        value = getattr(res, "value", res)
         try:
-            return int(res[-1].value)
+            return int(value)
         except Exception:
             return 0
     except wasmtime.Trap:

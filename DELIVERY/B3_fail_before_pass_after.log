@@ -1,12 +1,12 @@
 == B3 fallible-signature fail-before / pass-after, 2026-11-25 ==
-before: sars 57cb57f (HEAD) | after: B3 fallible ABI
+before: sars 57cb57f (HEAD) | after: 23b9ffa + follow-up Try-dest type inference
 runner: wasmtime + typed zero-return extern stubs; trap=2002, build-fail=2001, runner-exception=2005
-exit code = last wasm result (value for fallible main)
+exit code = last wasm result (value for fallible main); single-result wasmtime runs return a plain int
 
 == SUMMARY ==
-total=968 before_rc0=876 after_rc0=922
+total=968 before_rc0=857 after_rc0=902
 b3_expected=43 recovered=43 still_fail=0 pass_to_fail=0
-non_b3_recoveries=3 (19_result_question 372_try_br_null_combo 464_vtable_fallible)
+non_b3_recoveries=2 (19_result_question 464_vtable_fallible)
 
 == RECOVERED B3 (43) ==
 176_result_flattening before=2001 after=0
@@ -53,9 +53,8 @@ non_b3_recoveries=3 (19_result_question 372_try_br_null_combo 464_vtable_fallibl
 521_callback_fallible_split before=2001 after=0
 526_loop_code_check before=2001 after=0
 
-== NON-B3 RECOVERIES (3) ==
+== NON-B3 RECOVERIES (2) ==
 19_result_question before=2001 after=0
-372_try_br_null_combo before=2001 after=0
 464_vtable_fallible before=2001 after=0
 
 == FULL NAME SET (968) ==
@@ -327,17 +326,17 @@ non_b3_recoveries=3 (19_result_question 372_try_br_null_combo 464_vtable_fallibl
 333_weak_cyclic_reference before=0 after=0
 334_indirect_import_shadow before=0 after=0
 335_ts_slice_inverted_bounds before=2001 after=2001
-336_ts_trunc_u64_to_i32 before=0 after=0
+336_ts_trunc_u64_to_i32 before=1 after=1
 337_u64_add_wrap64 before=0 after=0
 338_zext_i32_to_i64 before=0 after=0
-339_sext_i32_to_i64 before=0 after=0
+339_sext_i32_to_i64 before=1 after=1
 33_iterator_map before=0 after=0
 340_sitofp_fptosi_roundtrip before=0 after=0
 341_fptosi_truncates_toward_zero before=0 after=0
 342_uitofp_large_u64_roundtrip before=0 after=0
 343_bitcast_i32_u32 before=0 after=0
 344_bitcast_u64_i64 before=0 after=0
-345_fptrunc_f32_rounding before=0 after=0
+345_fptrunc_f32_rounding before=1 after=1
 346_lshr_u64_high_bit before=0 after=0
 347_lshr_u32_to_max before=0 after=0
 348_udiv_u32_to_max before=0 after=0
@@ -350,16 +349,16 @@ non_b3_recoveries=3 (19_result_question 372_try_br_null_combo 464_vtable_fallibl
 354_neg_not_i32 before=0 after=0
 355_and_or_xor_i32 before=0 after=0
 356_br_null_ptr before=0 after=0
-357_br_null_nonnull before=0 after=0
-358_br_null_computed_zero before=0 after=0
+357_br_null_nonnull before=1 after=1
+358_br_null_computed_zero before=1 after=1
 359_br_null_u64max before=0 after=0
 35_iterator_fold before=0 after=0
-360_br_null_i32_zero before=0 after=0
-361_take_basic before=0 after=0
-362_take_field before=0 after=0
+360_br_null_i32_zero before=1 after=1
+361_take_basic before=1 after=1
+362_take_field before=1 after=1
 363_fence_noop before=2001 after=2001
-364_br_null_loaded before=0 after=0
-365_br_null_chain before=0 after=0
+364_br_null_loaded before=1 after=1
+365_br_null_chain before=1 after=1
 366_try_unpack_const before=2001 after=0
 367_try_params_arith before=2001 after=0
 368_try_chained before=2001 after=0
@@ -367,7 +366,7 @@ non_b3_recoveries=3 (19_result_question 372_try_br_null_combo 464_vtable_fallibl
 36_tuple_struct before=0 after=0
 370_try_u64_payload before=2001 after=0
 371_try_in_loop before=2001 after=0
-372_try_br_null_combo before=2001 after=0
+372_try_br_null_combo before=2001 after=1
 373_try_mem_roundtrip before=2001 after=0
 374_try_f64_payload before=2001 after=0
 375_try_branchy_returns before=2001 after=0
@@ -379,28 +378,28 @@ non_b3_recoveries=3 (19_result_question 372_try_br_null_combo 464_vtable_fallibl
 380_mem_f64_roundtrip before=0 after=0
 381_mem_ptr_roundtrip before=0 after=0
 382_mem_i1_roundtrip before=0 after=0
-383_zext_i8_load before=0 after=0
-384_zext_i16_load before=0 after=0
+383_zext_i8_load before=1 after=1
+384_zext_i16_load before=1 after=1
 385_sext_i8_load before=0 after=0
 386_div_u64max_by_one before=0 after=0
 387_div_i64_neg before=0 after=0
-388_rem_u64max_loaded before=0 after=0
-389_gt_u64_loaded before=0 after=0
+388_rem_u64max_loaded before=1 after=1
+389_gt_u64_loaded before=1 after=1
 38_generic_struct_i32 before=0 after=0
-390_shr_signed_unsigned before=0 after=0
+390_shr_signed_unsigned before=1 after=1
 391_div_i32_small before=0 after=0
 392_rem_i32_neg before=0 after=0
 393_gt_i32_signed before=0 after=0
 394_div_and_chain before=0 after=0
 395_div_mixed_sign before=0 after=0
-396_trunc_narrow_family before=0 after=0
+396_trunc_narrow_family before=1 after=1
 397_trunc_i64_u64 before=0 after=0
 398_bitcast_i64_ptr before=0 after=0
 399_zext_narrow_targets before=0 after=0
 39_generic_enum_i32 before=0 after=0
-400_sitofp_f32_bits before=0 after=0
+400_sitofp_f32_bits before=1 after=1
 401_fptosi_narrow before=0 after=0
-402_bitcast_i32_f32 before=0 after=0
+402_bitcast_i32_f32 before=1 after=1
 403_bitcast_f32_i32 before=0 after=0
 404_bitcast_f64_roundtrip before=0 after=0
 405_fneg_basic before=0 after=0
@@ -440,7 +439,7 @@ non_b3_recoveries=3 (19_result_question 372_try_br_null_combo 464_vtable_fallibl
 436_u64_pow53_exact before=0 after=0
 437_u64_pow53_plus1_even before=0 after=0
 438_u64_pow53_plus3_even before=0 after=0
-439_f32_round_half_even before=0 after=0
+439_f32_round_half_even before=1 after=1
 43_tagged_union before=0 after=0
 440_f32_eps_visible before=0 after=0
 441_uitofp_max_u64 before=0 after=0

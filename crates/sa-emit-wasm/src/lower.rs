@@ -124,6 +124,7 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
             InstructionKind::Call { target, .. } => call_sig(program, target)
                 .filter(|sig| !sig.return_value_type().is_void())
                 .map(|sig| storage_type(Some(sig.return_value_type())).unwrap_or(VALTYPE_I64)),
+            InstructionKind::Try { src } => Some(operand_storage(Some(src), &probe, ins.ty)),
             _ => None,
         };
         if let Some(result) = result {
