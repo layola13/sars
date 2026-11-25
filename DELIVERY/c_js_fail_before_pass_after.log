@@ -1,0 +1,17 @@
+JS total=973
+before pass=944 fail=29
+after  pass=950 fail=23
+pass->fail=0 []
+fail->pass=6 ['181_file_descriptor_raii', '182_mmap_memory_mapping', '184_pthread_spawn_join', '186_sqlite_c_api_binding', '963_compress_checksum', '964_multipart_checksum']
+stdout-changed among originally passing=0 []
+TARGET 181_file_descriptor_raii before=1('error\n') after=0('3\n')
+TARGET 184_pthread_spawn_join before=1('error\n') after=0('5\n')
+TARGET 186_sqlite_c_api_binding before=1('error\n') after=0('8\n')
+TARGET 963_compress_checksum before=1('error\n') after=0('ok\n')
+TARGET 964_multipart_checksum before=2('error\n') after=0('ok\n')
+  f2p 181_file_descriptor_raii before=1('error\n') after=0('3\n')
+  f2p 182_mmap_memory_mapping before=1('error\n') after=0('4\n')
+  f2p 184_pthread_spawn_join before=1('error\n') after=0('5\n')
+  f2p 186_sqlite_c_api_binding before=1('error\n') after=0('8\n')
+  f2p 963_compress_checksum before=1('error\n') after=0('ok\n')
+  f2p 964_multipart_checksum before=2('error\n') after=0('ok\n')

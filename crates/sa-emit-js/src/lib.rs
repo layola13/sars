@@ -4,6 +4,7 @@ mod ident;
 mod lower;
 mod npm;
 mod runtime;
+mod shims;
 #[cfg(test)]
 mod tests;
 

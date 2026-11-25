@@ -342,6 +342,54 @@ fn externs_get_shims_and_calls_dispatch() {
 }
 
 #[test]
+fn c_group_externs_get_real_contract_shims() {
+    let names = [
+        "fd_open", "fd_read", "fd_close", "pthread_spawn", "pthread_drop",
+        "pthread_join", "sa_pthread_join", "sqlite3_prepare", "sqlite3_step",
+        "sqlite3_finalize", "sa_std_compress_supported", "sa_std_compress_encode",
+        "sa_std_compress_decode", "sa_std_compress_buffer_data",
+        "sa_std_compress_buffer_len", "sa_std_compress_buffer_free",
+        "sa_std_multipart_parse", "sa_std_multipart_count",
+        "sa_std_multipart_part_body", "sa_std_multipart_part_name",
+        "sa_std_multipart_part_filename", "sa_std_multipart_part_content_type",
+        "sa_std_multipart_part_header", "sa_std_multipart_builder_new",
+        "sa_std_multipart_builder_free", "sa_std_multipart_builder_add_field",
+        "sa_std_multipart_builder_add_file", "sa_std_multipart_builder_boundary",
+        "sa_std_multipart_builder_content_type", "sa_std_multipart_builder_finish",
+        "sa_std_multipart_buffer_data", "sa_std_multipart_buffer_len",
+        "sa_std_multipart_buffer_free",
+    ];
+    let mut p = program(vec![function("main", vec![block("entry", vec![
+        ins(InstructionKind::Return { value: Some(Operand::Int(0)) }),
+    ])])]);
+    for name in names {
+        let mut sig = Signature::new(name);
+        sig.kind = sa_ir::FunctionKind::External;
+        p.externs.push(sig);
+    }
+    let js = emit_js(&p, &JsOptions::default()).unwrap();
+    for name in names {
+        assert!(js.contains(&format!("function {name}(")), "missing shim {name}");
+        assert!(
+            js.contains(&format!("SA_EXTERNS[\"{name}\"] = {name};")),
+            "missing dispatch {name}"
+        );
+        assert!(
+            !js.contains(&format!("SA_EXTERNS[\"{name}\"] = function () {{ return 0; }};")),
+            "stub not replaced {name}"
+        );
+    }
+    assert!(js.contains("globalThis.__sa_next_fd = (globalThis.__sa_next_fd || 3);"));
+    assert!(js.contains("if (i >= 0) SA_FUNCS[i](arg);"));
+    assert!(js.contains("function sqlite3_step(stmt) { return 100; }"));
+    assert!(js.contains("p.getBuiltinModule(\"node:zlib\")"));
+    assert!(js.contains("text.split(\"--\" + boundary)"));
+    assert!(balanced(&js));
+    assert!(no_comments(&js));
+    node_check(&js, true);
+}
+
+#[test]
 fn extra_destinations_are_declared_and_bound() {
     let mut exchange = typed(
         InstructionKind::Cmpxchg {

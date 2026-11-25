@@ -1,0 +1,11 @@
+JS total=973
+before pass=944 fail=29
+after  pass=944 fail=29
+pass->fail=0 []
+fail->pass=0 []
+stdout-changed among originally passing=0 []
+TARGET 181_file_descriptor_raii before=1('error\n') after=1('error\n')
+TARGET 184_pthread_spawn_join before=1('error\n') after=1('error\n')
+TARGET 186_sqlite_c_api_binding before=1('error\n') after=1('error\n')
+TARGET 963_compress_checksum before=1('error\n') after=1('error\n')
+TARGET 964_multipart_checksum before=2('error\n') after=2('error\n')

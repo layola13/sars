@@ -3,6 +3,7 @@ use crate::ident::{const_name, js_float, js_func_name, js_int, js_string};
 use crate::lower::{build_ctx, emit_function, ByteConsts};
 use crate::npm;
 use crate::runtime;
+use crate::shims;
 use crate::JsOptions;
 use sa_ir::{ConstValue, Diagnostic, PrimType, Program, Trap};
 use std::collections::HashMap;
@@ -170,13 +171,22 @@ fn emit_footer(
             npm::emit_wrapper(sig, info, buf);
             continue;
         }
-        buf.push_indent(
-            0,
-            &format!(
-                "SA_EXTERNS[{}] = function () {{ return 0; }};",
-                js_string(&sig.name)
+        match shims::emit_shim(&sig.name) {
+            Some(shim) => {
+                buf.raw(shim);
+                buf.push_indent(
+                    0,
+                    &format!("SA_EXTERNS[{}] = {};", js_string(&sig.name), sig.name),
+                );
+            }
+            None => buf.push_indent(
+                0,
+                &format!(
+                    "SA_EXTERNS[{}] = function () {{ return 0; }};",
+                    js_string(&sig.name)
+                ),
             ),
-        );
+        }
     }
 
     match opts.format {
