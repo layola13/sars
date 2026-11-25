@@ -16,6 +16,7 @@ pub struct FunctionCode {
 struct Registers {
     map: HashMap<String, u32>,
     types: Vec<u8>,
+    ptypes: Vec<Option<PrimType>>,
     status: HashMap<String, u32>,
     scratch: [u32; 2],
     consts: HashMap<String, u32>,
@@ -29,6 +30,7 @@ fn diag(trap: Trap, message: &str, loc: &SourceLoc, function: &str) -> Diagnosti
 fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnostic>) -> Registers {
     let mut map = HashMap::new();
     let mut types = Vec::new();
+    let mut ptypes: Vec<Option<PrimType>> = Vec::new();
     for p in &func.sig.params {
         let ty = match storage_type(Some(p.ty)) {
             Some(t) => t,
@@ -42,6 +44,7 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
                 VALTYPE_I64
             }
         };
+        ptypes.push(Some(p.ty));
         map.insert(p.name.clone(), types.len() as u32);
         types.push(ty);
     }
@@ -52,6 +55,7 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
             .find(|i| i.dest.as_deref() == Some(name.as_str()) && i.ty.is_some())
             .and_then(|i| i.ty);
         let ty = storage_type(hint).unwrap_or(VALTYPE_I64);
+        ptypes.push(hint);
         map.insert(name.clone(), types.len() as u32);
         types.push(ty);
     }
@@ -59,6 +63,7 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
         for name in ins.all_dests() {
             if !map.contains_key(name) {
                 let ty = storage_type(ins.ty).unwrap_or(VALTYPE_I64);
+                ptypes.push(ins.ty);
                 map.insert(name.to_string(), types.len() as u32);
                 types.push(ty);
             }
@@ -68,12 +73,14 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
         {
             let name = "__wa_scratch_0".to_string();
             map.insert(name, types.len() as u32);
+            ptypes.push(None);
             types.push(VALTYPE_I64);
             types.len() as u32 - 1
         },
         {
             let name = "__wa_scratch_1".to_string();
             map.insert(name, types.len() as u32);
+            ptypes.push(None);
             types.push(VALTYPE_I64);
             types.len() as u32 - 1
         },
@@ -85,6 +92,7 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
     let mut status = HashMap::new();
     for name in map.keys() {
         let index = types.len() as u32;
+        ptypes.push(None);
         types.push(VALTYPE_I32);
         status.insert(name.clone(), index);
     }
@@ -92,6 +100,7 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
     let mut probe = Registers {
         map: map.clone(),
         types: types.clone(),
+        ptypes: ptypes.clone(),
         status: status.clone(),
         scratch,
         consts: consts.clone(),
@@ -106,20 +115,25 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
         };
         let result = match &ins.kind {
             InstructionKind::Op { op, args } => {
-                let storage = match op {
-                    OpKind::Sitofp | OpKind::Uitofp => VALTYPE_I64,
-                    OpKind::Fptosi => VALTYPE_F64,
-                    _ => operand_storage(args.first(), &probe, ins.ty),
-                };
-                Some(if op.is_comparison() {
-                    VALTYPE_I64
+                if op.is_conversion() {
+                    storage_type(ins.ty)
+                        .or_else(|| Some(operand_storage(args.first(), &probe, ins.ty)))
                 } else {
-                    match op {
-                        OpKind::Fptosi => VALTYPE_I64,
-                        OpKind::Sitofp | OpKind::Uitofp => VALTYPE_F64,
-                        _ => storage,
-                    }
-                })
+                    let storage = match op {
+                        OpKind::Sitofp | OpKind::Uitofp => VALTYPE_I64,
+                        OpKind::Fptosi => VALTYPE_F64,
+                        _ => operand_storage(args.first(), &probe, ins.ty),
+                    };
+                    Some(if op.is_comparison() {
+                        VALTYPE_I64
+                    } else {
+                        match op {
+                            OpKind::Fptosi => VALTYPE_I64,
+                            OpKind::Sitofp | OpKind::Uitofp => VALTYPE_F64,
+                            _ => storage,
+                        }
+                    })
+                }
             }
             InstructionKind::Call { target, .. } => call_sig(program, target)
                 .filter(|sig| !sig.return_value_type().is_void())
@@ -130,6 +144,16 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
         if let Some(result) = result {
             probe.types[index as usize] = result;
             types[index as usize] = result;
+        }
+        let ptype = match &ins.kind {
+            InstructionKind::Call { target, .. } => call_sig(program, target)
+                .filter(|sig| !sig.return_value_type().is_void())
+                .map(|sig| sig.return_value_type()),
+            _ => ins.ty,
+        };
+        if let Some(ptype) = ptype {
+            probe.ptypes[index as usize] = Some(ptype);
+            ptypes[index as usize] = Some(ptype);
         }
     }
     let signatures = vtable_signatures(program);
@@ -160,6 +184,11 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
                     if let Some(&index) = map.get(name) {
                         types[index as usize] = result;
                         probe.types[index as usize] = result;
+                        if let Some(sig) = matches.first() {
+                            let ty = sig.return_value_type();
+                            ptypes[index as usize] = Some(ty);
+                            probe.ptypes[index as usize] = Some(ty);
+                        }
                     }
                 } else {
                     indirect_drops.insert(*ins as *const Instruction as usize, result);
@@ -170,6 +199,7 @@ fn collect_registers(func: &Function, program: &Program, diags: &mut Vec<Diagnos
     Registers {
         map,
         types,
+        ptypes,
         status,
         scratch,
         consts,
@@ -334,6 +364,181 @@ fn operand_storage(op: Option<&Operand>, regs: &Registers, hint: Option<PrimType
             .unwrap_or(VALTYPE_I64),
         Some(Operand::Float(_)) => VALTYPE_F64,
         _ => storage_type(hint).unwrap_or(VALTYPE_I64),
+    }
+}
+
+fn prim_bits(ty: Option<PrimType>) -> u32 {
+    match ty {
+        Some(PrimType::I1) => 1,
+        Some(PrimType::I8) | Some(PrimType::U8) => 8,
+        Some(PrimType::I16) | Some(PrimType::U16) => 16,
+        Some(PrimType::I32) | Some(PrimType::U32) | Some(PrimType::F32) => 32,
+        _ => 64,
+    }
+}
+
+fn operand_type(
+    op: Option<&Operand>,
+    regs: &Registers,
+    hint: Option<PrimType>,
+) -> Option<PrimType> {
+    match op {
+        Some(Operand::Reg(name)) => regs.map.get(name).and_then(|&i| regs.ptypes[i as usize]),
+        Some(Operand::Float(_)) => Some(PrimType::F64),
+        _ => hint,
+    }
+}
+
+fn mask_bits(out: &mut Vec<u8>, bits: u32) {
+    match bits {
+        1 => {
+            i64_const(out, 1);
+            put_u8(out, I64_AND);
+        }
+        8 => {
+            i64_const(out, 0xff);
+            put_u8(out, I64_AND);
+        }
+        16 => {
+            i64_const(out, 0xffff);
+            put_u8(out, I64_AND);
+        }
+        32 => {
+            put_u8(out, I32_WRAP_I64);
+            put_u8(out, I64_EXTEND_I32_U);
+        }
+        _ => {}
+    }
+}
+
+fn sign_extend_bits(out: &mut Vec<u8>, bits: u32) {
+    match bits {
+        8 => put_u8(out, I64_EXTEND8_S),
+        16 => put_u8(out, I64_EXTEND16_S),
+        32 => put_u8(out, I64_EXTEND32_S),
+        _ => {}
+    }
+}
+
+fn canonicalize_bits(out: &mut Vec<u8>, bits: u32, signed: bool) {
+    if signed {
+        sign_extend_bits(out, bits);
+    } else {
+        mask_bits(out, bits);
+    }
+}
+
+fn round_f32(out: &mut Vec<u8>) {
+    put_u8(out, F32_DEMOTE_F64);
+    put_u8(out, F64_PROMOTE_F32);
+}
+
+fn emit_conversion(
+    out: &mut Vec<u8>,
+    op: OpKind,
+    args: &[Operand],
+    regs: &Registers,
+    dest_ty: Option<PrimType>,
+    loc: &SourceLoc,
+    function: &str,
+    diags: &mut Vec<Diagnostic>,
+) -> u8 {
+    let src = args.first();
+    let src_ty = operand_type(src, regs, None);
+    let src_bits = prim_bits(src_ty);
+    let dst_bits = prim_bits(dest_ty);
+    let dst_signed = is_signed_prim(dest_ty);
+    let dst_float = dest_ty.map(|t| t.is_float()).unwrap_or(false);
+    let src_float = src_ty.map(|t| t.is_float()).unwrap_or(false);
+    let mut emit_src = |out: &mut Vec<u8>, storage: u8| match src {
+        Some(s) => emit_operand(out, s, regs, storage, loc, function, diags),
+        None => emit_int_const(out, 0, storage),
+    };
+    match op {
+        OpKind::Trunc => {
+            emit_src(out, VALTYPE_I64);
+            mask_bits(out, dst_bits);
+            canonicalize_bits(out, dst_bits, dst_signed);
+        }
+        OpKind::Zext => {
+            emit_src(out, VALTYPE_I64);
+            mask_bits(out, src_bits);
+            mask_bits(out, dst_bits);
+        }
+        OpKind::Sext => {
+            emit_src(out, VALTYPE_I64);
+            mask_bits(out, src_bits);
+            sign_extend_bits(out, src_bits);
+            if dst_bits < 64 {
+                mask_bits(out, dst_bits);
+            }
+        }
+        OpKind::Bitcast => {
+            if src_ty == Some(PrimType::F32) && !dst_float {
+                emit_src(out, VALTYPE_F64);
+                put_u8(out, F32_DEMOTE_F64);
+                put_u8(out, I32_REINTERPRET_F32);
+                put_u8(out, I64_EXTEND_I32_U);
+                canonicalize_bits(out, 32, dst_signed);
+            } else if src_ty == Some(PrimType::F64) && !dst_float {
+                emit_src(out, VALTYPE_F64);
+                put_u8(out, I64_REINTERPRET_F64);
+                canonicalize_bits(out, dst_bits, dst_signed);
+            } else if !src_float && dest_ty == Some(PrimType::F32) {
+                emit_src(out, VALTYPE_I64);
+                mask_bits(out, 32);
+                put_u8(out, I32_WRAP_I64);
+                put_u8(out, F32_REINTERPRET_I32);
+                put_u8(out, F64_PROMOTE_F32);
+            } else if !src_float && dest_ty == Some(PrimType::F64) {
+                emit_src(out, VALTYPE_I64);
+                put_u8(out, F64_REINTERPRET_I64);
+            } else if src_float && dst_float {
+                emit_src(out, VALTYPE_F64);
+                if dest_ty == Some(PrimType::F32) {
+                    round_f32(out);
+                }
+            } else {
+                emit_src(out, VALTYPE_I64);
+                let width = src_bits.min(dst_bits);
+                mask_bits(out, width);
+                canonicalize_bits(out, width, dst_signed);
+            }
+        }
+        OpKind::Fptrunc => {
+            emit_src(out, VALTYPE_F64);
+            round_f32(out);
+        }
+        OpKind::Fpext => emit_src(out, VALTYPE_F64),
+        OpKind::Sitofp => {
+            emit_src(out, VALTYPE_I64);
+            if dest_ty == Some(PrimType::F32) {
+                put_u8(out, F32_CONVERT_I64_S);
+                put_u8(out, F64_PROMOTE_F32);
+            } else {
+                put_u8(out, F64_CONVERT_I64_S);
+            }
+        }
+        OpKind::Uitofp => {
+            emit_src(out, VALTYPE_I64);
+            if dest_ty == Some(PrimType::F32) {
+                put_u8(out, F32_CONVERT_I64_U);
+                put_u8(out, F64_PROMOTE_F32);
+            } else {
+                put_u8(out, F64_CONVERT_I64_U);
+            }
+        }
+        OpKind::Fptosi => {
+            emit_src(out, VALTYPE_F64);
+            put_u8(out, I64_TRUNC_F64_S);
+            canonicalize_bits(out, dst_bits, dst_signed);
+        }
+        _ => emit_src(out, if dst_float { VALTYPE_F64 } else { VALTYPE_I64 }),
+    }
+    if dst_float {
+        VALTYPE_F64
+    } else {
+        VALTYPE_I64
     }
 }
 
@@ -695,6 +900,56 @@ fn lower_op(
     diags: &mut Vec<Diagnostic>,
 ) {
     let loc = &ins.loc;
+    let dest_ty = ins
+        .dest
+        .as_deref()
+        .and_then(|name| regs.map.get(name))
+        .and_then(|&i| regs.ptypes[i as usize])
+        .or(ins.ty);
+    if op.is_conversion() {
+        let result = emit_conversion(out, op, args, regs, dest_ty, loc, function, diags);
+        convert(out, result, dest_storage);
+        return;
+    }
+    let shift_ty = operand_type(args.first(), regs, None);
+    if matches!(op, OpKind::Shl | OpKind::LShr | OpKind::Shr | OpKind::AShr)
+        && prim_bits(shift_ty) == 32
+    {
+        if let Some(a) = args.first() {
+            emit_operand(out, a, regs, VALTYPE_I64, loc, function, diags);
+            put_u8(out, I32_WRAP_I64);
+        }
+        if let Some(b) = args.get(1) {
+            emit_operand(out, b, regs, VALTYPE_I64, loc, function, diags);
+            put_u8(out, I32_WRAP_I64);
+        }
+        let signed = is_signed_prim(shift_ty);
+        let code = match op {
+            OpKind::Shl => I32_SHL,
+            OpKind::LShr => I32_SHR_U,
+            OpKind::Shr | OpKind::AShr => {
+                if signed {
+                    I32_SHR_S
+                } else {
+                    I32_SHR_U
+                }
+            }
+            _ => unreachable!(),
+        };
+        put_u8(out, code);
+        let result_signed = match op {
+            OpKind::LShr => false,
+            OpKind::AShr => true,
+            _ => signed,
+        };
+        if result_signed {
+            put_u8(out, I64_EXTEND_I32_S);
+        } else {
+            put_u8(out, I64_EXTEND_I32_U);
+        }
+        convert(out, VALTYPE_I64, dest_storage);
+        return;
+    }
     let storage = match op {
         OpKind::Sitofp | OpKind::Uitofp => VALTYPE_I64,
         OpKind::Fptosi => VALTYPE_F64,
@@ -775,6 +1030,9 @@ fn lower_op(
                 result_storage = VALTYPE_I64;
             }
         }
+    }
+    if dest_ty == Some(PrimType::F32) && result_storage == VALTYPE_F64 {
+        round_f32(out);
     }
     convert(out, result_storage, dest_storage);
 }
@@ -1115,8 +1373,37 @@ fn lower_instruction(
             ));
         }
         InstructionKind::Panic { .. } => put_u8(out, UNREACHABLE),
-        InstructionKind::Take { .. }
-        | InstructionKind::Release { .. }
+        InstructionKind::Take { addr } => {
+            let (code, align) = match load_opcode(ins.ty) {
+                Some(v) => v,
+                None => {
+                    diags.push(diag(
+                        Trap::UnsupportedType,
+                        "take type is not supported",
+                        loc,
+                        function,
+                    ));
+                    return;
+                }
+            };
+            emit_address(out, addr, regs, loc, function, diags);
+            put_u8(out, code);
+            memarg(out, align, addr.offset);
+            match valtype_for_prim(ins.ty.unwrap_or(PrimType::I64)) {
+                Some(VALTYPE_I32) => put_u8(
+                    out,
+                    if is_signed_prim(ins.ty) {
+                        I64_EXTEND_I32_S
+                    } else {
+                        I64_EXTEND_I32_U
+                    },
+                ),
+                Some(VALTYPE_F32) => put_u8(out, F64_PROMOTE_F32),
+                _ => {}
+            }
+            store_or_drop(out, ins, regs);
+        }
+        InstructionKind::Release { .. }
         | InstructionKind::VaStart
         | InstructionKind::VaEnd
         | InstructionKind::Native { .. }
@@ -1369,5 +1656,259 @@ mod tests {
             Some(I64_DIV_U)
         );
         assert_eq!(numeric_opcode(OpKind::Eq, VALTYPE_I64, None), Some(I64_EQ));
+    }
+
+    fn simple_function(instrs: Vec<Instruction>) -> Function {
+        let mut sig = Signature::new("main");
+        sig.return_ty = PrimType::I64;
+        let mut f = Function::new(sig, SourceLoc::unknown());
+        let mut block = sa_ir::Block::new("entry", SourceLoc::unknown());
+        block.instrs.extend(instrs);
+        f.blocks.push(block);
+        f
+    }
+
+    fn lower_code(f: &Function) -> Vec<u8> {
+        let mut diags = Vec::new();
+        let code = lower_function(&Program::new(), f, &HashMap::new(), &[], "", 0, &mut diags).code;
+        assert!(diags.is_empty());
+        code
+    }
+
+    #[test]
+    fn trunc_and_zext_canonicalize_to_source_and_target_widths() {
+        let f = simple_function(vec![
+            Instruction::new(
+                InstructionKind::Assign {
+                    src: Operand::Int(4294967295),
+                },
+                SourceLoc::unknown(),
+                "big",
+            )
+            .with_dest("big")
+            .with_ty(PrimType::U64),
+            Instruction::new(
+                InstructionKind::Op {
+                    op: OpKind::Trunc,
+                    args: vec![Operand::reg("big")],
+                },
+                SourceLoc::unknown(),
+                "trunc",
+            )
+            .with_dest("m")
+            .with_ty(PrimType::I32),
+            Instruction::new(
+                InstructionKind::Op {
+                    op: OpKind::Zext,
+                    args: vec![Operand::reg("m")],
+                },
+                SourceLoc::unknown(),
+                "zext",
+            )
+            .with_dest("z")
+            .with_ty(PrimType::I64),
+            Instruction::new(
+                InstructionKind::Return {
+                    value: Some(Operand::reg("z")),
+                },
+                SourceLoc::unknown(),
+                "return",
+            ),
+        ]);
+        let code = lower_code(&f);
+        assert!(code.contains(&I32_WRAP_I64));
+        assert!(code.contains(&I64_EXTEND_I32_U));
+        assert!(code.contains(&I64_EXTEND32_S));
+    }
+
+    #[test]
+    fn narrow_signed_shift_emits_i32_signed_shift() {
+        let f = simple_function(vec![
+            Instruction::new(
+                InstructionKind::Assign {
+                    src: Operand::Int(4294967288),
+                },
+                SourceLoc::unknown(),
+                "big",
+            )
+            .with_dest("big")
+            .with_ty(PrimType::U64),
+            Instruction::new(
+                InstructionKind::Op {
+                    op: OpKind::Trunc,
+                    args: vec![Operand::reg("big")],
+                },
+                SourceLoc::unknown(),
+                "trunc",
+            )
+            .with_dest("m")
+            .with_ty(PrimType::I32),
+            Instruction::new(
+                InstructionKind::Assign {
+                    src: Operand::Int(2),
+                },
+                SourceLoc::unknown(),
+                "k",
+            )
+            .with_dest("k")
+            .with_ty(PrimType::I64),
+            Instruction::new(
+                InstructionKind::Op {
+                    op: OpKind::Shr,
+                    args: vec![Operand::reg("m"), Operand::reg("k")],
+                },
+                SourceLoc::unknown(),
+                "shr",
+            )
+            .with_dest("s"),
+            Instruction::new(
+                InstructionKind::Return {
+                    value: Some(Operand::reg("s")),
+                },
+                SourceLoc::unknown(),
+                "return",
+            ),
+        ]);
+        let code = lower_code(&f);
+        assert!(code.contains(&I32_SHR_S));
+        assert!(code.contains(&I64_EXTEND_I32_S));
+    }
+
+    #[test]
+    fn bitcast_integer_to_f32_emits_reinterpret_then_promote() {
+        let f = simple_function(vec![
+            Instruction::new(
+                InstructionKind::Assign {
+                    src: Operand::Int(1065353216),
+                },
+                SourceLoc::unknown(),
+                "bits",
+            )
+            .with_dest("bits")
+            .with_ty(PrimType::I64),
+            Instruction::new(
+                InstructionKind::Op {
+                    op: OpKind::Bitcast,
+                    args: vec![Operand::reg("bits")],
+                },
+                SourceLoc::unknown(),
+                "bitcast",
+            )
+            .with_dest("f")
+            .with_ty(PrimType::F32),
+            Instruction::new(
+                InstructionKind::Return {
+                    value: Some(Operand::reg("f")),
+                },
+                SourceLoc::unknown(),
+                "return",
+            ),
+        ]);
+        let code = lower_code(&f);
+        assert!(code.contains(&F32_REINTERPRET_I32));
+        assert!(code.contains(&F64_PROMOTE_F32));
+    }
+
+    #[test]
+    fn sitofp_to_f32_uses_narrow_conversion() {
+        let f = simple_function(vec![
+            Instruction::new(
+                InstructionKind::Assign {
+                    src: Operand::Int(1),
+                },
+                SourceLoc::unknown(),
+                "a",
+            )
+            .with_dest("a")
+            .with_ty(PrimType::I32),
+            Instruction::new(
+                InstructionKind::Op {
+                    op: OpKind::Sitofp,
+                    args: vec![Operand::reg("a")],
+                },
+                SourceLoc::unknown(),
+                "sitofp",
+            )
+            .with_dest("f")
+            .with_ty(PrimType::F32),
+            Instruction::new(
+                InstructionKind::Return {
+                    value: Some(Operand::reg("f")),
+                },
+                SourceLoc::unknown(),
+                "return",
+            ),
+        ]);
+        let code = lower_code(&f);
+        assert!(code.contains(&F32_CONVERT_I64_S));
+        assert!(code.contains(&F64_PROMOTE_F32));
+    }
+
+    #[test]
+    fn fptrunc_rounds_f64_to_binary32() {
+        let f = simple_function(vec![
+            Instruction::new(
+                InstructionKind::Assign {
+                    src: Operand::Float(1.5),
+                },
+                SourceLoc::unknown(),
+                "wide",
+            )
+            .with_dest("wide")
+            .with_ty(PrimType::F64),
+            Instruction::new(
+                InstructionKind::Op {
+                    op: OpKind::Fptrunc,
+                    args: vec![Operand::reg("wide")],
+                },
+                SourceLoc::unknown(),
+                "fptrunc",
+            )
+            .with_dest("f")
+            .with_ty(PrimType::F32),
+            Instruction::new(
+                InstructionKind::Return {
+                    value: Some(Operand::reg("f")),
+                },
+                SourceLoc::unknown(),
+                "return",
+            ),
+        ]);
+        let code = lower_code(&f);
+        assert!(code.contains(&F32_DEMOTE_F64));
+        assert!(code.contains(&F64_PROMOTE_F32));
+    }
+
+    #[test]
+    fn take_emits_a_load_of_the_address() {
+        let f = simple_function(vec![
+            Instruction::new(
+                InstructionKind::Assign {
+                    src: Operand::Int(0),
+                },
+                SourceLoc::unknown(),
+                "p",
+            )
+            .with_dest("p")
+            .with_ty(PrimType::Ptr),
+            Instruction::new(
+                InstructionKind::Take {
+                    addr: Address::new(Operand::reg("p"), 0),
+                },
+                SourceLoc::unknown(),
+                "take",
+            )
+            .with_dest("v")
+            .with_ty(PrimType::I64),
+            Instruction::new(
+                InstructionKind::Return {
+                    value: Some(Operand::reg("v")),
+                },
+                SourceLoc::unknown(),
+                "return",
+            ),
+        ]);
+        let code = lower_code(&f);
+        assert!(code.contains(&I64_LOAD));
     }
 }

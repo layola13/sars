@@ -98,6 +98,9 @@ pub const F64_GE: u8 = 0x66;
 pub const I32_ADD: u8 = 0x6a;
 pub const I32_SUB: u8 = 0x6b;
 pub const I32_MUL: u8 = 0x6c;
+pub const I32_SHL: u8 = 0x74;
+pub const I32_SHR_S: u8 = 0x75;
+pub const I32_SHR_U: u8 = 0x76;
 pub const I64_ADD: u8 = 0x7c;
 pub const I64_SUB: u8 = 0x7d;
 pub const I64_MUL: u8 = 0x7e;
@@ -125,18 +128,31 @@ pub const I64_EXTEND_I32_S: u8 = 0xac;
 pub const I64_EXTEND_I32_U: u8 = 0xad;
 pub const I64_TRUNC_F64_S: u8 = 0xb0;
 pub const I64_TRUNC_F64_U: u8 = 0xb1;
+pub const F32_CONVERT_I32_S: u8 = 0xb2;
+pub const F32_CONVERT_I64_S: u8 = 0xb4;
+pub const F32_CONVERT_I64_U: u8 = 0xb5;
 pub const F64_CONVERT_I64_S: u8 = 0xb9;
 pub const F64_CONVERT_I64_U: u8 = 0xba;
 pub const F64_PROMOTE_F32: u8 = 0xbb;
 pub const F32_DEMOTE_F64: u8 = 0xb6;
+pub const I32_REINTERPRET_F32: u8 = 0xbc;
+pub const I64_REINTERPRET_F64: u8 = 0xbd;
+pub const F32_REINTERPRET_I32: u8 = 0xbe;
+pub const F64_REINTERPRET_I64: u8 = 0xbf;
+pub const I64_EXTEND8_S: u8 = 0xc2;
+pub const I64_EXTEND16_S: u8 = 0xc3;
+pub const I64_EXTEND32_S: u8 = 0xc4;
 
 pub fn valtype_for_prim(ty: PrimType) -> Option<u8> {
     match ty {
-        PrimType::I1 | PrimType::I8 | PrimType::I16 | PrimType::I32 | PrimType::U8
-        | PrimType::U16 | PrimType::U32 => Some(VALTYPE_I32),
-        PrimType::I64 | PrimType::U64 | PrimType::Ptr | PrimType::BlobHandle => {
-            Some(VALTYPE_I64)
-        }
+        PrimType::I1
+        | PrimType::I8
+        | PrimType::I16
+        | PrimType::I32
+        | PrimType::U8
+        | PrimType::U16
+        | PrimType::U32 => Some(VALTYPE_I32),
+        PrimType::I64 | PrimType::U64 | PrimType::Ptr | PrimType::BlobHandle => Some(VALTYPE_I64),
         PrimType::F32 => Some(VALTYPE_F32),
         PrimType::F64 => Some(VALTYPE_F64),
         PrimType::V128 => None,
