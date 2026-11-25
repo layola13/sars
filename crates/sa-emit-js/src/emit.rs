@@ -76,15 +76,11 @@ fn emit_consts(program: &Program, bytes: &ByteConsts, buf: &mut Buf) {
             ConstValue::VTable(entries) => {
                 let mut data = Vec::new();
                 for entry in entries {
-                    let text = match entry {
-                        ConstValue::Utf8(text) => text.clone(),
-                        other => other.to_string(),
-                    };
-                    let target = text.split_once(':').map(|(_, t)| t).unwrap_or(&text);
-                    let index = program
-                        .functions
-                        .iter()
-                        .position(|f| f.sig.name == target)
+                    let index = entry
+                        .vtable_target()
+                        .and_then(|target| {
+                            program.functions.iter().position(|f| f.sig.name == target)
+                        })
                         .unwrap_or(0) as u64;
                     data.extend_from_slice(&(0x5341_0000_0000_0000u64 + index).to_le_bytes());
                 }
