@@ -6,6 +6,9 @@ pub fn runtime_source(heap_size: usize) -> String {
 #include <unistd.h>
 #include <stdlib.h>
 
+#define sa_ok_val(v) (v)
+#define sa_ok_none() 0
+
 static uint8_t sa_heap_buf[{heap}];
 static size_t sa_heap_off = 0;
 

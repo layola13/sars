@@ -247,6 +247,7 @@ impl<'a> FnCtx<'a> {
                             .extern_sig(target)
                             .map(|s| s.return_value_type())
                     }),
+                InstructionKind::Try { src } => ctx.type_of_operand(Some(src)),
                 _ => ins.ty,
             };
             if let Some(ty) = inferred {
@@ -287,6 +288,9 @@ impl<'a> FnCtx<'a> {
                         .extern_sig(target)
                         .map(|s| s.return_value_type())
                 })
+                .unwrap_or(PrimType::I64),
+            InstructionKind::Try { src } => self
+                .type_of_operand(Some(src))
                 .unwrap_or(PrimType::I64),
             _ => PrimType::I64,
         }
@@ -612,10 +616,6 @@ fn emit_instruction(
                     return;
                 }
             };
-            if sig.return_fallible {
-                unsupported(ctx, diags, &ins.loc, "fallible call");
-                return;
-            }
             let sym = ctx
                 .names
                 .funcs
@@ -637,15 +637,26 @@ fn emit_instruction(
             unsupported(ctx, diags, &ins.loc, "call_indirect / vtable dispatch");
         }
         InstructionKind::Return { value } | InstructionKind::EarlyReturn { value } => {
+            let ret_ty = ctx.func.sig.return_value_type();
             match value {
                 Some(v) => {
-                    let ret = ctx.expr(v, ctx.func.sig.return_value_type(), diags);
-                    out.push_str(&format!(
-                        "  return ({})({ret});\n",
-                        c_type(ctx.func.sig.return_value_type())
-                    ));
+                    let ret = ctx.expr(v, ret_ty, diags);
+                    if ctx.func.sig.return_fallible {
+                        out.push_str(&format!(
+                            "  return sa_ok_val(({})({ret}));\n",
+                            c_type(ret_ty)
+                        ));
+                    } else {
+                        out.push_str(&format!("  return ({})({ret});\n", c_type(ret_ty)));
+                    }
                 }
-                None => out.push_str("  return;\n"),
+                None => {
+                    if ctx.func.sig.return_fallible && !ret_ty.is_void() {
+                        out.push_str("  return sa_ok_none();\n");
+                    } else {
+                        out.push_str("  return;\n");
+                    }
+                }
             }
         }
         InstructionKind::Assign { src }
@@ -786,8 +797,19 @@ fn emit_instruction(
         InstructionKind::Fence { order } => {
             out.push_str(&format!("  __atomic_thread_fence({});\n", atomic_order(*order)));
         }
-        InstructionKind::Try { .. } => {
-            unsupported(ctx, diags, &ins.loc, "fallible `?` unpacking");
+        InstructionKind::Try { src } => {
+            let ty = ins
+                .dest
+                .as_deref()
+                .and_then(|d| ctx.types.get(d).copied())
+                .unwrap_or_else(|| ctx.type_of_operand(Some(src)).unwrap_or(PrimType::I64));
+            let v = ctx.expr(src, ty, diags);
+            if let Some(d) = &dest {
+                out.push_str(&format!(
+                    "  {{ {} sa_t = ({v}); {d} = sa_t; }}\n",
+                    c_type(ty)
+                ));
+            }
         }
         InstructionKind::Native { .. }
         | InstructionKind::VaStart
@@ -814,14 +836,6 @@ fn emit_function(
         diags.push(diag(
             Trap::UnsupportedInstruction,
             "variadic functions are not supported by the C backend",
-            &func.loc,
-            func.name(),
-        ));
-    }
-    if func.sig.return_fallible {
-        diags.push(diag(
-            Trap::UnsupportedInstruction,
-            "fallible function signatures are not supported by the C backend (first increment)",
             &func.loc,
             func.name(),
         ));

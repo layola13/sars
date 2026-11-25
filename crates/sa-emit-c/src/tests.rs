@@ -178,6 +178,57 @@ fn emits_atomics_and_fences() {
 }
 
 #[test]
+fn emits_fallible_call_try_and_return() {
+    let mut p = Program::new();
+    let mut msig = Signature::new("half");
+    msig.return_ty = PrimType::F64;
+    msig.return_fallible = true;
+    let mut mf = Function::new(msig, loc());
+    let mut mb = Block::new("L_ENTRY", loc());
+    mb.instrs.push(Instruction::new(
+        InstructionKind::Return {
+            value: Some(Operand::Float(0.5)),
+        },
+        loc(),
+        "return",
+    ));
+    mf.blocks.push(mb);
+    p.functions.push(mf);
+
+    let mut f = Function::new(Signature::new("main"), loc());
+    let mut b = Block::new("L_ENTRY", loc());
+    b.instrs.push(Instruction::new(
+        InstructionKind::Call {
+            target: "half".to_string(),
+            args: vec![],
+        },
+        loc(),
+        "call",
+    ).with_dest("r"));
+    b.instrs.push(Instruction::new(
+        InstructionKind::Try {
+            src: Operand::reg("r"),
+        },
+        loc(),
+        "?",
+    ).with_dest("v"));
+    b.instrs.push(Instruction::new(
+        InstructionKind::Return {
+            value: Some(Operand::reg("v")),
+        },
+        loc(),
+        "return",
+    ));
+    f.blocks.push(b);
+    p.functions.push(f);
+    let c = emit_c(&p, &COptions::default()).unwrap();
+    assert!(c.contains("sa_ok_val("), "{c}");
+    assert!(c.contains("sa_t = ("), "{c}");
+    assert!(c.contains("double r1_v"), "{c}");
+    assert!(!c.contains("not implemented by the C backend"), "{c}");
+}
+
+#[test]
 fn rejects_unsupported_extern() {
     let mut p = Program::new();
     let mut sig = Signature::new("puts");
