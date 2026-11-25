@@ -40,4 +40,24 @@
 1. fallible status+value ABI（35 名）+ `?` 解包（8 名）；2. vtable/call_indirect 函数指针表；3. C11 atomics；
 4. 无 shim extern 下沉为 shim 集；5. native/variadic。以上均已显式诊断，不会静默错值。
 
+## 账目对齐（回 10700 ⑤ · 57bc34f 确切名集账）
+
+逐名证据：`/tmp/opencode/cluster_full_log.txt`、`r2_full_log.txt`、`b2_full_log.txt`、`b4_full_log.txt`。
+
+- **两套分母分别列**：
+  - wasm 分母 **969**（968 rosetta + once_probe）：generic runner rc=0 **919**；typed runner rc=0 **924**；
+    严格 stdout 命中 **922**（924 减 301/302）。
+  - JS 分母 **973**：pass **941**，fail **32**（与 10695 报数一致）。
+- 10673 的「919→924」= R2 typed-stub 落地时的 rc=0 增量（5 名）；10695 的「919/969」= generic runner 的
+  rc=0 基线（B4 之后、R2 之前）。两者口径不同，并非矛盾；10695 把基线 919 误写成“现测”属笔误，
+  现测 typed rc=0 应为 **924/969**。
+- **差额 5 名逐名交代**（R2 中 rc 由非 0 翻 0）：
+  1. `186_sqlite_c_api_binding` — stdout `8\n` → 计入
+  2. `963_compress_checksum` — stdout `ok\n` → 计入
+  3. `964_multipart_checksum` — stdout `ok\n` → 计入
+  4. `301_http_client_saasm` — stdout `error\n` → **不计**（输出分歧纪律，仅 rc 假翻绿）
+  5. `302_http_server_saasm` — stdout `error\n` → **不计**（同上）
+  ⇒ stdout 级净增 **3**，pass→fail=0；rc 级 919+5=924，严格 stdout 级 919+3=922。
+- **301/302 的计与不计**：rc 层面计（确实翻 0），战绩层面不计（stdout 仍 `error\n`）——此即 5 与 3 的差。
+
 推送：本机无 GIT_TOKEN，照旧由主会话代推；报本地头后请核远端。
