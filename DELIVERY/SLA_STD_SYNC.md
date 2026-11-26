@@ -125,5 +125,6 @@ OK: 10 functions, 18 instructions, gas used 54
 
 ## 5. 推送核对（KB #1/#3）
 
-- 推前：`git ls-remote origin` → `8b51475695d23881b78baa82a816b396cef7e99b refs/heads/main`，HEAD 同值。
-- 推后：见文末补记（push 后追加）。
+- 推前：`git ls-remote origin` → `8b51475695d23881b78baa82a816b396cef7e99b refs/heads/main`，仅 main，无本任务分支。
+- 推送尝试：`git push -u origin task/sla_std_thin_wrap_sync` → 失败：`fatal: could not read Username for 'https://github.com': No such device or address`。环境无 git credential helper、`~/.git-credentials`、`GH_TOKEN`/`GITHUB_TOKEN`，`gh auth status` 为未登录。
+- 推后（同一无凭据环境下复查）：`git ls-remote origin` 仍只有 `8b51475... refs/heads/main`，远端未变化；本地分支 `task/sla_std_thin_wrap_sync` 停在 `1646bdf`（ahead origin/main 1），待有推送凭据后执行同一条 push 即可。
