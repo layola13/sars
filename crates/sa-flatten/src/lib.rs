@@ -1,4 +1,5 @@
 mod forbidden;
+pub mod def_expr;
 mod imports;
 mod macros;
 mod resolver;
@@ -74,6 +75,7 @@ fn flatten_rec(
 
     let mut merged = program.clone();
     merged.imports.clear();
+    def_expr::normalize_defs(&mut merged.defs);
 
     for import in &program.imports {
         let key = import.path.clone();
