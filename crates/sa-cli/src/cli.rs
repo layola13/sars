@@ -25,6 +25,7 @@ pub enum Command {
         format: OutputFormat,
         debug: bool,
         entry: Option<String>,
+        emit_dts: bool,
     },
     BuildWasm {
         file: String,
@@ -57,7 +58,7 @@ pub const USAGE: &str = concat!(
     "Commands:\n",
     "  check <file> [--json] [--no-verify]\n",
     "  run <file> [--trace] [--gas N]\n",
-    "  build-js <file> [-o <out>] [--format esm|cjs] [-g|--no-debug] [--entry NAME]\n",
+    "  build-js <file> [-o <out>] [--format esm|cjs] [-g|--no-debug] [--entry NAME] [--emit-dts]\n",
     "  build-wasm <file> [-o <out>] [--entry NAME]\n",
     "  build-exe <file> [-o <out>] [-g|--no-debug] [-O0|-O2] [--target TRIPLE] [--entry NAME]\n",
     "  dump-ir <file>\n",
@@ -179,6 +180,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
             let mut format = OutputFormat::default();
             let mut debug = true;
             let mut entry = None;
+            let mut emit_dts = false;
             let mut i = 0;
             while i < rest.len() {
                 let arg = rest[i].as_str();
@@ -191,6 +193,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                     }
                     "-g" | "--no-debug" => debug = false,
                     "--entry" => entry = Some(take_value(rest, &mut i, "--entry")?),
+                    "--emit-dts" => emit_dts = true,
                     s if s.starts_with("--format=") => format = parse_format(&s[9..])?,
                     s if s.starts_with("--entry=") => entry = Some(inline_value(s, "--entry=").unwrap()),
                     s if s.starts_with('-') => {
@@ -205,6 +208,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                 format,
                 debug,
                 entry,
+                emit_dts,
             })
         }
         "build-wasm" => {
@@ -388,7 +392,8 @@ mod tests {
                 out: None,
                 format: OutputFormat::Esm,
                 debug: true,
-                entry: None
+                entry: None,
+                emit_dts: false
             }
         );
         assert_eq!(
@@ -401,7 +406,8 @@ mod tests {
                 out: Some("x.js".to_string()),
                 format: OutputFormat::Cjs,
                 debug: false,
-                entry: Some("go".to_string())
+                entry: Some("go".to_string()),
+                emit_dts: false
             }
         );
         assert_eq!(
@@ -410,6 +416,40 @@ mod tests {
                 file: "a.sa".to_string(),
                 out: None,
                 entry: Some("main".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn parses_emit_dts_flag() {
+        match parse_args(&args(&["build-js", "a.sa"])).unwrap() {
+            Command::BuildJs { emit_dts, .. } => assert!(!emit_dts),
+            other => panic!("unexpected command: {other:?}"),
+        }
+        assert_eq!(
+            parse_args(&args(&["build-js", "a.sa", "--emit-dts"])).unwrap(),
+            Command::BuildJs {
+                file: "a.sa".to_string(),
+                out: None,
+                format: OutputFormat::Esm,
+                debug: true,
+                entry: None,
+                emit_dts: true
+            }
+        );
+        assert_eq!(
+            parse_args(&args(&[
+                "build-js", "a.sa", "-o", "x.mjs", "--format", "esm", "-g", "--entry", "go",
+                "--emit-dts"
+            ]))
+            .unwrap(),
+            Command::BuildJs {
+                file: "a.sa".to_string(),
+                out: Some("x.mjs".to_string()),
+                format: OutputFormat::Esm,
+                debug: false,
+                entry: Some("go".to_string()),
+                emit_dts: true
             }
         );
     }

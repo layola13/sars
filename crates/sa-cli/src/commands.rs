@@ -27,7 +27,8 @@ pub fn dispatch(command: Command) -> i32 {
             format,
             debug,
             entry,
-        } => build_js(&file, out, format, debug, entry),
+            emit_dts,
+        } => build_js(&file, out, format, debug, entry, emit_dts),
         Command::BuildWasm { file, out, entry } => build_wasm(&file, out, entry),
         Command::BuildExe {
             file,
@@ -157,6 +158,7 @@ fn build_js(
     format: OutputFormat,
     debug: bool,
     entry: Option<String>,
+    emit_dts: bool,
 ) -> i32 {
     let compilation = match pipeline::compile(file, true) {
         Ok(c) => c,
@@ -179,7 +181,26 @@ fn build_js(
             } else {
                 ".mjs"
             };
-            write_output(&out.unwrap_or_else(|| default_output(file, ext)), code.as_bytes())
+            let js_path = out.unwrap_or_else(|| default_output(file, ext));
+            let dts = if emit_dts {
+                match sa_emit_js::dts::emit_dts(&compilation.program, file) {
+                    Ok(text) => Some(text),
+                    Err(diags) => return fail(&diags, file, false),
+                }
+            } else {
+                None
+            };
+            let rc = write_output(&js_path, code.as_bytes());
+            if rc != 0 {
+                return rc;
+            }
+            match dts {
+                Some(text) => {
+                    let dts_path = sa_emit_js::dts::dts_path_for_js_path(&js_path);
+                    write_output(&dts_path, text.as_bytes())
+                }
+                None => rc,
+            }
         }
         Err(diags) => fail(&diags, file, false),
     }
