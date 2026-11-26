@@ -14,6 +14,16 @@ static size_t sa_heap_off = 0;
 
 static void sa_panic(void) {{ _Exit(1); }}
 
+typedef struct {{
+    uint64_t fn;
+    double arg;
+}} sa_js_evt;
+static sa_js_evt sa_js_q[32];
+static uint64_t sa_js_q_head = 0;
+static uint64_t sa_js_q_tail = 0;
+static uint64_t sa_js_cb = 0;
+static const uint8_t sa_js_user[] = "sars";
+
 static uint8_t *sa_alloc(uint64_t bytes) {{
     size_t n = (size_t)((bytes + 15u) & ~(uint64_t)15u);
     if (n == 0) n = 16;
@@ -40,6 +50,14 @@ static int64_t sa_bitcast_i64_f64(double x) {{
 static double sa_bitcast_f64_i64(int64_t x) {{
     union {{ uint64_t u; double d; }} v;
     v.u = (uint64_t)x; return v.d;
+}}
+static int32_t sa_bitcast_f32_i32(float x) {{
+    union {{ uint32_t u; float f; }} v;
+    v.f = x; return (int32_t)v.u;
+}}
+static float sa_bitcast_i32_f32(int32_t x) {{
+    union {{ uint32_t u; float f; }} v;
+    v.u = (uint32_t)x; return v.f;
 }}
 "#,
         heap = heap_size

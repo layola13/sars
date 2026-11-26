@@ -221,13 +221,6 @@ fn build_exe(
         Err(diags) => return fail(&diags, file, false),
     };
     let mut diags = Vec::new();
-    if !compilation.program.npm_binds.is_empty() {
-        diags.push(Diagnostic::new(
-            sa_ir::Trap::UnsupportedInstruction,
-            "build-exe rejects #npm_bind programs (D22): npm bindings are JS-only",
-            compilation.program.npm_binds[0].loc.clone(),
-        ));
-    }
     if let Some(name) = &entry {
         if name != "main" {
             diags.push(Diagnostic::new(

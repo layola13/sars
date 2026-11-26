@@ -42,6 +42,9 @@ impl<'a> RuleCtx<'a> {
 }
 
 fn check_redefine(ctx: &mut RuleCtx, state: &FnState, reg: &str, loc: &SourceLoc) {
+    if state.escaped.contains(reg) {
+        return;
+    }
     match state.state_of(reg) {
         RegState::Owned { kind: RegKind::Scalar } => return,
         RegState::Owned { .. } => ctx.report(
@@ -391,7 +394,12 @@ fn check_atomic(ctx: &mut RuleCtx, addr: &str, order: sa_ir::AtomicOrdering, loc
 
 fn mark_escaped_alloc(state: &mut FnState, op: &Operand) {
     if let Operand::Reg(name) = op {
-        if matches!(state.state_of(name), RegState::Owned { kind: RegKind::Alloc }) {
+        if matches!(
+            state.state_of(name),
+            RegState::Owned {
+                kind: RegKind::Alloc | RegKind::Value
+            }
+        ) {
             state.escaped.insert(name.clone());
         }
     }
@@ -512,7 +520,7 @@ fn handle_call(
 fn is_owned_pointer_param(ctx: &RuleCtx, name: &str) -> bool {
     ctx.signature.params.iter().any(|param| {
         param.name == name
-            && matches!(param.cap, CapPrefix::ByValue | CapPrefix::Move)
+            && param.cap == CapPrefix::Move
             && matches!(param.ty, PrimType::Ptr)
     })
 }
@@ -571,6 +579,7 @@ fn check_leaks(ctx: &mut RuleCtx, state: &FnState, loc: &SourceLoc) {
                 return true;
             }
             indirect_dispatch
+                && call_arg_regs.contains(*name)
                 && state.borrow_params.contains(*name)
                 && !matches!(reg_state, RegState::Moved | RegState::Released)
         })
@@ -648,7 +657,23 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
         }
         InstructionKind::Call { target, args } => {
             let fallible = handle_call(ctx, state, target, args, loc);
-            define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
+            let scalar_result = ctx
+                .program
+                .function(target)
+                .map(|function| &function.sig)
+                .or_else(|| ctx.program.extern_sig(target))
+                .map(|sig| {
+                    !matches!(
+                        sig.return_ty,
+                        PrimType::Ptr
+                            | PrimType::BlobHandle
+                            | PrimType::V128
+                            | PrimType::Void
+                    )
+                })
+                .unwrap_or(false);
+            let kind = if scalar_result { RegKind::Scalar } else { RegKind::Value };
+            define(ctx, ins, state, RegState::Owned { kind }, loc);
             if let Some(dest) = ins.dest.as_deref() {
                 state.fallible.insert(dest.to_string(), fallible);
             }

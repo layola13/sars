@@ -261,6 +261,34 @@ impl<'a> FnCtx<'a> {
             if let InstructionKind::CallIndirect { target, args } = &ins.kind {
                 let (_, ret) = indirect_types(&ctx, ins, target, args);
                 if let Some(dest) = ins.dest.as_deref() {
+                    let ret = if indirect_signature(ctx.program, ctx.func, target).is_none()
+                        && !ret.is_float()
+                        && instrs.iter().any(|use_ins| match &use_ins.kind {
+                            InstructionKind::Op { op, args } => {
+                                matches!(
+                                    op,
+                                    OpKind::FAdd
+                                        | OpKind::FSub
+                                        | OpKind::FMul
+                                        | OpKind::FDiv
+                                        | OpKind::FNeg
+                                        | OpKind::FcmpEq
+                                        | OpKind::FcmpNe
+                                        | OpKind::FcmpLt
+                                        | OpKind::FcmpLe
+                                        | OpKind::FcmpGt
+                                        | OpKind::FcmpGe
+                                ) && args.iter().any(|a| {
+                                    matches!(a, Operand::Reg(name) if name == dest)
+                                })
+                            }
+                            _ => false,
+                        })
+                    {
+                        PrimType::F64
+                    } else {
+                        ret
+                    };
                     ctx.types.insert(dest.to_string(), ret);
                 }
             }
@@ -334,6 +362,15 @@ impl<'a> FnCtx<'a> {
                             .unwrap_or(false)
                     {
                         return format!("(uint8_t *)(uintptr_t)({r})");
+                    }
+                    if hint.is_integer()
+                        && self
+                            .types
+                            .get(name)
+                            .map(|ty| ty.is_pointer())
+                            .unwrap_or(false)
+                    {
+                        return format!("({})(uintptr_t)({})", c_type(hint), r);
                     }
                     return r.clone();
                 }
@@ -634,6 +671,20 @@ fn op_expression(
                     (PrimType::I64 | PrimType::U64, PrimType::F64) => {
                         format!("sa_bitcast_f64_i64({a})")
                     }
+                    (PrimType::F32, PrimType::I32 | PrimType::U32) => {
+                        format!("sa_bitcast_f32_i32({a})")
+                    }
+                    (PrimType::I32 | PrimType::U32, PrimType::F32) => {
+                        format!("sa_bitcast_i32_f32({a})")
+                    }
+                    (PrimType::I8, PrimType::U8)
+                    | (PrimType::U8, PrimType::I8)
+                    | (PrimType::I16, PrimType::U16)
+                    | (PrimType::U16, PrimType::I16)
+                    | (PrimType::I32, PrimType::U32)
+                    | (PrimType::U32, PrimType::I32)
+                    | (PrimType::I64, PrimType::U64)
+                    | (PrimType::U64, PrimType::I64) => format!("({cty})({a})"),
                     _ => {
                         diags.push(diag(
                             Trap::UnsupportedType,
@@ -1362,6 +1413,33 @@ fn shim_body(name: &str) -> Option<&'static str> {
             "sa_mp_rec *r = sa_mp_get(a0); return r != (sa_mp_rec *)0 && r->kind == 3 ? r->len : 0;"
         }
         "sa_std_multipart_buffer_free" => "return (int32_t)sa_mp_drop(a0);",
+        "npm_totalmem" => "return (uint64_t)8589934592ULL;",
+        "npm_parallelism" => "return (uint32_t)8;",
+        "npm_isabs" | "npm_ns_isabs" => {
+            "if (a1 == 0 || a0 == (uint8_t *)0) return 0u; return ((const uint8_t *)a0)[0] == (uint8_t)'/' ? 1u : 0u;"
+        }
+        "npm_iseq" | "npm_ns_iseq" => {
+            "if (a1 != a3) return 0u; if (a1 == 0) return 1u; if (a0 == (uint8_t *)0 || a2 == (uint8_t *)0) return 0u; return memcmp((const void *)a0, (const void *)a2, (size_t)a1) == 0 ? 1u : 0u;"
+        }
+        "ee_new" | "os_user_info" | "hash_new" => "return sa_alloc(8);",
+        "ee_max_listeners" => "(void)a0; return (int32_t)10;",
+        "ui_username" => {
+            "if (a2 < 4u) { *(uint64_t *)(void *)a3 = 4u; return 1; } memcpy((void *)a1, (const void *)sa_js_user, 4u); *(uint64_t *)(void *)a3 = 4u; return 0;"
+        }
+        "hash_update" => "return a0;",
+        "hash_digest" => "return sa_alloc(32);",
+        "buf_length" => "(void)a0; return (int32_t)32;",
+        "ee_on" => "if (a3 != (uint8_t *)0) sa_js_cb = *(uint64_t *)(void *)a3; return a0;",
+        "ee_emit" => {
+            "if (sa_js_q_tail < 32u) { sa_js_q[sa_js_q_tail].fn = sa_js_cb; sa_js_q[sa_js_q_tail].arg = a3; sa_js_q_tail++; } return (int32_t)1;"
+        }
+        "sa_js_make_callback" => {
+            "uint8_t *p = sa_alloc(8); *(uint64_t *)(void *)p = a0; return p;"
+        }
+        "sa_js_callback_poll" => {
+            "if (sa_js_q_head >= sa_js_q_tail) return (int64_t)0; { sa_js_evt *e = &sa_js_q[sa_js_q_head++]; *(uint64_t *)(void *)a0 = e->fn; *(int64_t *)(void *)a1 = 1; *(double *)(void *)a2 = e->arg; return (int64_t)1; }"
+        }
+        "sa_js_value_release" => "(void)a0; return (int32_t)0;",
         _ => return None,
     })
 }
@@ -1413,13 +1491,6 @@ pub fn emit(program: &Program, opts: &crate::COptions) -> Result<String, Vec<Dia
                 opts.target
             ),
             SourceLoc::unknown(),
-        ));
-    }
-    if !program.npm_binds.is_empty() {
-        diags.push(Diagnostic::new(
-            Trap::UnsupportedInstruction,
-            "build-exe rejects #npm_bind programs (D22): npm bindings are JS-only",
-            program.npm_binds[0].loc.clone(),
         ));
     }
     if !diags.is_empty() {

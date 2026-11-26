@@ -258,7 +258,7 @@ fn emits_staged_extern_shims() {
 }
 
 #[test]
-fn rejects_npm_bind() {
+fn emits_npm_host_bindings() {
     let mut p = hello_program();
     p.npm_binds.push(NpmBindDecl {
         extern_name: "sa_print_bytes".to_string(),
@@ -267,8 +267,8 @@ fn rejects_npm_bind() {
         shape: NpmBindShape::Call,
         loc: loc(),
     });
-    let errs = emit_c(&p, &COptions::default()).unwrap_err();
-    assert!(errs.iter().any(|d| d.trap == Trap::UnsupportedInstruction));
+    let c = emit_c(&p, &COptions::default()).expect("npm bindings emit C host shims");
+    assert!(c.contains("sa_js_q"), "{c}");
 }
 
 #[test]

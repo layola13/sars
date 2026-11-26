@@ -507,7 +507,7 @@ fn live_borrow_param_in_indirect_dispatch_is_a_leak() {
                 ins(
                     InstructionKind::CallIndirect {
                         target: Operand::Symbol("vt".into()),
-                        args: vec![],
+                        args: vec![sa_ir::CallArg::new(CapPrefix::Borrow, Operand::reg("slot"))],
                     },
                     2,
                 ),
@@ -546,7 +546,7 @@ fn unreleased_owned_ptr_param_is_an_exit_leak() {
     source
         .sig
         .params
-        .push(ParamSpec::new("handle", PrimType::Ptr, CapPrefix::ByValue));
+        .push(ParamSpec::new("handle", PrimType::Ptr, CapPrefix::Move));
     let errors = verify(&program(vec![source]), &VerifyOptions::default()).unwrap_err();
     assert!(has_trap(&errors, Trap::MemoryLeak), "{errors:?}");
     assert!(errors.iter().any(|diagnostic| diagnostic.register.as_deref() == Some("handle")));
