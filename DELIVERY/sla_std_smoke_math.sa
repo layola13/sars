@@ -1,0 +1,11 @@
+@import "sla_std/wrap/math.sla"
+@import "sa_std/io/print.sai"
+
+@const MSG = utf8:"sqrt wrapped ok\n"
+
+@main() -> i32:
+L_ENTRY:
+    r = call @sla_math_sqrt(9.0)
+    !r
+    call @sa_print_bytes(&MSG, 16)
+    return 0

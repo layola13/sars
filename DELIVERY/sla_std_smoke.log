@@ -1,0 +1,33 @@
+# sla_std Rust-side smoke log (task/sla_std_thin_wrap_sync)
+
+## Environment
+SA_STD=/content/sa_all/sci/sa_std:/content/sa_all/sci
+sars=sa 0.1.0
+
+## 1) math wrap: check
+$ ./target/release/sars check DELIVERY/sla_std_smoke_math.sa
+OK: 8 functions, 18 instructions, gas used 53
+exit=0
+
+## 2) math wrap: run
+$ ./target/release/sars run DELIVERY/sla_std_smoke_math.sa
+sqrt wrapped ok
+exit=0
+
+## 3) needs_state module growvec: import + check
+$ ./target/release/sars check DELIVERY/sla_std_smoke_needs_state.sa
+OK: 10 functions, 18 instructions, gas used 54
+exit=0
+
+## 4) byte-for-byte copy verification
+$ diff -r /content/sa_all/sa_plugin_sla/sla_std sla_std
+exit=0
+
+## 5) sha256 manifest comparison
+$ diff DELIVERY/sla_std_source_sha256.txt DELIVERY/sla_std_copy_sha256.txt
+exit=0
+
+## 6) workspace tests
+$ cargo test --workspace
+all test results ok; test binaries summarized in DELIVERY/SLA_STD_SYNC.md
+exit=0

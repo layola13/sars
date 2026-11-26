@@ -39,7 +39,12 @@ impl FsResolver {
         if !path.is_file() {
             return None;
         }
-        std::fs::read_to_string(path).ok()
+        let content = std::fs::read_to_string(path).ok()?;
+        if crate::sla_wrap::is_sla_wrap(path) {
+            Some(crate::sla_wrap::adapt(&content))
+        } else {
+            Some(content)
+        }
     }
 
     fn find_path(&self, path: &str, from: &str) -> Option<PathBuf> {

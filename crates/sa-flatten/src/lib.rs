@@ -2,6 +2,7 @@ mod forbidden;
 mod imports;
 mod macros;
 mod resolver;
+mod sla_wrap;
 mod walk;
 
 pub use resolver::{FsResolver, ImportResolver};

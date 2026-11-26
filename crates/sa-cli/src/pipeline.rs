@@ -79,11 +79,13 @@ pub fn resolve_roots(path: &str) -> Vec<PathBuf> {
         };
         push_root(&mut roots, current.clone());
         add_std_roots(&mut roots, &current.join("sa_std"));
+        add_std_roots(&mut roots, &current.join("sla_std"));
         dir = current.parent().map(Path::to_path_buf);
     }
     if let Ok(cwd) = std::env::current_dir() {
         push_root(&mut roots, cwd.clone());
         add_std_roots(&mut roots, &cwd.join("sa_std"));
+        add_std_roots(&mut roots, &cwd.join("sla_std"));
     }
     if let Ok(value) = std::env::var("SA_STD") {
         for part in value.split(|c| c == ':' || c == ';') {
