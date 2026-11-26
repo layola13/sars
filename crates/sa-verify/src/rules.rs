@@ -600,6 +600,8 @@ fn check_leaks(ctx: &mut RuleCtx, state: &FnState, loc: &SourceLoc) {
 
 pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
     let loc = &ins.loc;
+    let plan = crate::runtime_mask::plan(ins, state);
+    let errors_before = ctx.sink.errors.len();
     match &ins.kind {
         InstructionKind::Alloc { .. } | InstructionKind::StackAlloc { .. } => {
             for operand in ins.reads() {
@@ -730,6 +732,24 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
                 read_operand(ctx, operand, state, loc);
             }
             define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
+        }
+    }
+    if let Some(plan) = plan {
+        let bypass_errored = ctx.sink.errors.len() > errors_before;
+        if let Some(decision) = crate::runtime_mask::apply(state, &plan, bypass_errored) {
+            if let Some(trap) = decision.confirmed_trap {
+                ctx.report(
+                    trap,
+                    format!(
+                        "mask lookup rejects {:?} on register '{}' (prev mask 0x{:04x})",
+                        plan.op, plan.reg, plan.prev_mask
+                    ),
+                    loc,
+                    Some(&plan.reg),
+                    None,
+                    false,
+                );
+            }
         }
     }
 }
