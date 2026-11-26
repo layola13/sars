@@ -6,6 +6,7 @@ mod lower;
 mod npm;
 mod runtime;
 mod shims;
+pub mod unbound;
 #[cfg(test)]
 mod tests;
 

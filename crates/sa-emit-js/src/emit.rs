@@ -4,6 +4,7 @@ use crate::lower::{build_ctx, emit_function, ByteConsts};
 use crate::npm;
 use crate::runtime;
 use crate::shims;
+use crate::unbound;
 use crate::JsOptions;
 use sa_ir::{ConstValue, Diagnostic, PrimType, Program, Trap};
 use std::collections::HashMap;
@@ -159,12 +160,7 @@ fn emit_footer(
     buf.push_indent(0, "SA_EXTERNS[\"sa_js_make_callback\"] = sa_js_make_callback;");
     buf.push_indent(0, "SA_EXTERNS[\"sa_js_callback_poll\"] = sa_js_callback_poll;");
     for sig in &program.externs {
-        if function_names.contains_key(&sig.name)
-            || sig.name == "sa_print_bytes"
-            || sig.name == "sa_js_value_release"
-            || sig.name == "sa_js_make_callback"
-            || sig.name == "sa_js_callback_poll"
-        {
+        if function_names.contains_key(&sig.name) || unbound::is_runtime_extern(&sig.name) {
             continue;
         }
         if let Some(info) = npm_infos.get(&sig.name) {
@@ -179,13 +175,7 @@ fn emit_footer(
                     &format!("SA_EXTERNS[{}] = {};", js_string(&sig.name), sig.name),
                 );
             }
-            None => buf.push_indent(
-                0,
-                &format!(
-                    "SA_EXTERNS[{}] = function () {{ return 0; }};",
-                    js_string(&sig.name)
-                ),
-            ),
+            None => buf.push_indent(0, &unbound::unbound_stub_assignment(&sig.name)),
         }
     }
 

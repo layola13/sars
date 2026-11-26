@@ -336,7 +336,9 @@ fn externs_get_shims_and_calls_dispatch() {
     p.externs.push(sig);
     let js = emit_js(&p, &JsOptions::default()).unwrap();
     assert!(js.contains("call(\"foreign\", [])"));
-    assert!(js.contains("SA_EXTERNS[\"foreign\"] = function () { return 0; };"));
+    assert!(js.contains(
+        "SA_EXTERNS[\"foreign\"] = function () { sa_panic(2999, \"extern not linked: foreign\"); };"
+    ));
     assert!(js.contains("SA_EXTERNS[\"sa_print_bytes\"] = sa_print_bytes;"));
     node_check(&js, true);
 }
@@ -375,8 +377,8 @@ fn c_group_externs_get_real_contract_shims() {
             "missing dispatch {name}"
         );
         assert!(
-            !js.contains(&format!("SA_EXTERNS[\"{name}\"] = function () {{ return 0; }};")),
-            "stub not replaced {name}"
+            !js.contains(&format!("extern not linked: {name}")),
+            "bound shim must not get an unbound trap {name}"
         );
     }
     assert!(js.contains("globalThis.__sa_next_fd = (globalThis.__sa_next_fd || 3);"));
