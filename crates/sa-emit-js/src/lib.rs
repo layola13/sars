@@ -1,4 +1,5 @@
 mod buf;
+pub mod dts;
 mod emit;
 mod ident;
 mod lower;
