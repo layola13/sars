@@ -12,7 +12,7 @@ pub struct RuleCtx<'a> {
     pub sink: &'a mut DiagSink,
     pub func_name: &'a str,
     pub signature: &'a Signature,
-    pub atomics: &'a mut HashMap<String, sa_ir::AtomicOrdering>,
+    pub atomics: &'a mut HashMap<String, u8>,
 }
 
 impl<'a> RuleCtx<'a> {
@@ -409,14 +409,52 @@ fn release<S: RegStateBackend>(ctx: &mut RuleCtx, state: &mut S, reg: &str, loc:
     }
 }
 
-fn check_atomic(ctx: &mut RuleCtx, addr: &str, order: sa_ir::AtomicOrdering, loc: &SourceLoc) {
-    if let Some(previous) = ctx.atomics.get(addr).copied() {
-        if previous != order {
+fn order_seen_bit(order: sa_ir::AtomicOrdering) -> u8 {
+    match order {
+        sa_ir::AtomicOrdering::Relaxed => 0x01,
+        sa_ir::AtomicOrdering::Acquire => 0x02,
+        sa_ir::AtomicOrdering::Release => 0x04,
+        sa_ir::AtomicOrdering::AcqRel => 0x08,
+        sa_ir::AtomicOrdering::SeqCst => 0x10,
+    }
+}
+
+/// sci `sameAddressRmwCompatible` (`common/atomic.zig:92-96`): equal orderings
+/// are compatible, and seq_cst mixes with everything; relaxed/acquire/release/
+/// acq_rel in other combinations are not.
+fn same_address_rmw_compatible(
+    prev: sa_ir::AtomicOrdering,
+    next: sa_ir::AtomicOrdering,
+) -> bool {
+    prev == next
+        || prev == sa_ir::AtomicOrdering::SeqCst
+        || next == sa_ir::AtomicOrdering::SeqCst
+}
+
+/// key = (base register, static offset), matching sci `atomicKey`
+/// `(reg << 32) | imm_u64`. sars previously keyed only on the base name and
+/// stored just the last ordering, losing both offset and mixed-order history.
+fn check_atomic(
+    ctx: &mut RuleCtx,
+    addr: &sa_ir::Address,
+    order: sa_ir::AtomicOrdering,
+    loc: &SourceLoc,
+) {
+    let key = format!("{}::{}", addr.base, addr.offset);
+    let seen = ctx.atomics.get(&key).copied().unwrap_or(0);
+    for (bit, prev) in [
+        (0x01u8, sa_ir::AtomicOrdering::Relaxed),
+        (0x02, sa_ir::AtomicOrdering::Acquire),
+        (0x04, sa_ir::AtomicOrdering::Release),
+        (0x08, sa_ir::AtomicOrdering::AcqRel),
+        (0x10, sa_ir::AtomicOrdering::SeqCst),
+    ] {
+        if seen & bit != 0 && !same_address_rmw_compatible(prev, order) {
             ctx.report(
                 Trap::AtomicOrderingMismatch,
                 format!(
-                    "same-address RMW ordering changed from '{}' to '{}'",
-                    previous.name(),
+                    "same-address RMW ordering '{}' is incompatible with '{}'",
+                    prev.name(),
                     order.name()
                 ),
                 loc,
@@ -424,9 +462,10 @@ fn check_atomic(ctx: &mut RuleCtx, addr: &str, order: sa_ir::AtomicOrdering, loc
                 None,
                 false,
             );
+            break;
         }
     }
-    ctx.atomics.insert(addr.to_string(), order);
+    ctx.atomics.insert(key, seen | order_seen_bit(order));
 }
 
 fn mark_escaped_alloc<S: RegStateBackend>(state: &mut S, op: &Operand) {
@@ -760,9 +799,19 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
             check_leaks(ctx, state, loc);
         }
         InstructionKind::AtomicRmw { addr, value, order, .. } => {
-            check_atomic(ctx, &addr.base.to_string(), *order, loc);
+            check_atomic(ctx, addr, *order, loc);
             read_operand(ctx, &addr.base, state, loc);
             read_operand(ctx, value, state, loc);
+            define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
+        }
+        InstructionKind::Cmpxchg { addr, order, .. } => {
+            // sci armCmpxchg: same-address RMW ordering history applies to
+            // cmpxchg too; previously sars left it on the default arm with no
+            // atomic-order check.
+            check_atomic(ctx, addr, *order, loc);
+            for operand in ins.reads() {
+                read_operand(ctx, operand, state, loc);
+            }
             define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
         }
         InstructionKind::Try { src } => {

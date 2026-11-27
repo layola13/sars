@@ -147,7 +147,7 @@ fn check_function<S: RegStateBackend>(function: &Function, program: &Program, op
     in_states[0] = Some(initial_state::<S>(function));
     let mut worklist = VecDeque::new();
     worklist.push_back(0usize);
-    let mut atomics: HashMap<String, sa_ir::AtomicOrdering> = HashMap::new();
+    let mut atomics: HashMap<String, u8> = HashMap::new();
     let mut steps = 0usize;
 
     while let Some(index) = worklist.pop_front() {
