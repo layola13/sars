@@ -369,7 +369,72 @@ impl Operand {
     }
 }
 
+/// Decode backslash escapes into raw bytes with sci-compatible strict rules.
+///
+/// Mirrors sci `decodeQuotedBytes` (`src/interp/memory.zig:285-336`):
+/// `\\ \" \n \r \t \0` map to their byte values, `\xHH` maps to one byte,
+/// anything else (including a trailing backslash or an incomplete `\x`) is an
+/// error. Raw characters are appended as their UTF-8 encoding.
+pub fn unescape_bytes(body: &str) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(body.len());
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        let next = chars
+            .next()
+            .ok_or_else(|| "trailing backslash in string literal".to_string())?;
+        match next {
+            'n' => out.push(b'\n'),
+            'r' => out.push(b'\r'),
+            't' => out.push(b'\t'),
+            '0' => out.push(0),
+            '"' => out.push(b'"'),
+            '\\' => out.push(b'\\'),
+            'x' => {
+                let hi = chars
+                    .next()
+                    .and_then(|c| c.to_digit(16))
+                    .ok_or_else(|| "invalid \\x escape: expected hex digits".to_string())?;
+                let lo = chars
+                    .next()
+                    .and_then(|c| c.to_digit(16))
+                    .ok_or_else(|| "invalid \\x escape: expected hex digits".to_string())?;
+                out.push(((hi << 4) | lo) as u8);
+            }
+            other => return Err(format!("unknown escape sequence \\{}", other)),
+        }
+    }
+    Ok(out)
+}
+
+/// Decode a fully quoted literal (leading and trailing `"`) into raw bytes.
+pub fn decode_quoted(raw: &str) -> Result<Vec<u8>, String> {
+    if raw.len() < 2 || !raw.starts_with('"') || !raw.ends_with('"') {
+        return Err("string literal must start and end with '\"'".to_string());
+    }
+    unescape_bytes(&raw[1..raw.len() - 1])
+}
+
+/// Whether `bytes` is a well-formed UTF-8 sequence (sci `utf8ValidateSlice`).
+pub fn utf8_valid(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok()
+}
+
+/// Lenient decoder used by `Operand::parse` on the live path.
+///
+/// Keeps the historical behaviour for unknown escapes / non-UTF-8 byte escapes
+/// so the 968-name corpus stays byte-identical, but now recognises `\xHH`
+/// (previously preserved literally) when it forms valid UTF-8.
 fn unescape(s: &str) -> String {
+    if let Ok(bytes) = unescape_bytes(s) {
+        if let Ok(text) = String::from_utf8(bytes) {
+            return text;
+        }
+    }
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {

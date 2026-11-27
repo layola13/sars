@@ -339,6 +339,19 @@ fn const_value(tokens: &[Token]) -> Option<ConstValue> {
         }
     }
     let text = join(tokens);
+    // C1: strict UTF-8 literal validation at the const site. Unknown escapes
+    // and invalid UTF-8 are rejected (sci decodeQuotedBytes + utf8ValidateSlice).
+    // The lenient Operand::parse live path is unchanged, keeping corpus output
+    // byte-identical.
+    let is_utf8_literal =
+        text.starts_with("utf8:\"") || (text.starts_with('"') && text.ends_with('"'));
+    if is_utf8_literal {
+        let raw = text.strip_prefix("utf8:").unwrap_or(&text);
+        match sa_ir::decode_quoted(raw) {
+            Ok(bytes) if sa_ir::utf8_valid(&bytes) => {}
+            _ => return None,
+        }
+    }
     match sa_ir::Operand::parse(&text) {
         sa_ir::Operand::Int(v) => Some(ConstValue::Int(v)),
         sa_ir::Operand::Float(v) => Some(ConstValue::Float(v)),
