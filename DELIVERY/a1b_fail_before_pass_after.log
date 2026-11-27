@@ -1,0 +1,33 @@
+A1-b ALLOC/BORROW/MOVE/RELEASE ENGINE — fail-before / pass-after
+baseline=A1-a tree snapshot (carrier+table, no engine)
+unit_test=crates/sa-verify/tests/a1b_transition_engine.rs
+
+== UNIT TEST ==
+before_rc=101
+before_result=no test result line
+before_error=error[E0432]: unresolved import `sa_verify::capability`
+after_rc=0
+after_result=test result: ok. 8 passed; 0 failed
+  test a1b_alloc_borrow_move_release_parity ... ok
+  test a1b_move_out_of_borrow_is_borrow_conflict ... ok
+  test a1b_decide_has_no_if_else_fallback_for_unlisted_pairs ... ok
+  test a1b_shared_then_mutable_borrow_is_read_write_conflict ... ok
+  test a1b_ffi_borrow_view_carries_four_bits_without_simplification ... ok
+  test a1b_move_after_consume_is_use_after_move ... ok
+  test a1b_second_exclusive_borrow_is_double_mutable_borrow ... ok
+  test a1b_decide_matches_every_sci_truth_table_row ... ok
+
+== WORKSPACE REGRESSION ==
+workspace_rc=0
+workspace_results=test result: ok. 17 passed; 0 failed | test result: ok. 10 passed; 0 failed | test result: ok. 23 passed; 0 failed | test result: ok. 44 passed; 0 failed | test result: ok. 40 passed; 0 failed | test result: ok. 20 passed; 0 failed | test result: ok. 2 passed; 0 failed | test result: ok. 7 passed; 0 failed | test result: ok. 24 passed; 0 failed | test result: ok. 29 passed; 0 failed | test result: ok. 5 passed; 0 failed | test result: ok. 8 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed
+
+== 968-NAME `sars check` PARITY ==
+total=968
+before_check_pass=962
+after_check_pass=962
+pass_to_fail=0
+fail_to_pass=0
+REGRESSIONS: 
+RECOVERED: 
+before_binary=/tmp/opencode/a1b_evidence/before/target/release/sars
+after_binary=/tmp/opencode/a1b_evidence/after/target/release/sars

@@ -1,3 +1,4 @@
+pub mod capability;
 pub mod cfg;
 pub mod mask;
 pub mod merge;
