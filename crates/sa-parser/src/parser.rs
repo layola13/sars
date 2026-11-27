@@ -11,6 +11,7 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, Vec<Diagnostic>> {
         current_block: None,
         labels: Vec::new(),
         in_macro: false,
+        pending_loc: None,
     };
     let mut start = 0usize;
     for i in 0..=tokens.len() {
@@ -116,6 +117,9 @@ struct Parser {
     current_block: Option<usize>,
     labels: Vec<String>,
     in_macro: bool,
+    /// sci flattener `pending_loc`: a `#loc` directive retargets the next
+    /// emitted instruction to its upstream source position (one-shot).
+    pending_loc: Option<SourceLoc>,
 }
 
 impl Parser {
@@ -138,7 +142,12 @@ impl Parser {
         match line[0].kind {
             TokenKind::Directive => self.parse_directive(line),
             TokenKind::HashDirective => {
-                self.leave_function();
+                // `#loc` is an inline upstream-location marker (sci flattener
+                // emits it inside function bodies); it must not terminate the
+                // current function. Other directives remain top-level.
+                if line[0].text.as_str() != "#loc" {
+                    self.leave_function();
+                }
                 match line[0].text.as_str() {
                     "#def" => {
                         if let Some(d) = parse_header::parse_def(line) {
@@ -149,6 +158,13 @@ impl Parser {
                     }
                     "#loc" => {
                         if let Some(l) = parse_header::parse_loc(line) {
+                            // C5: the directive retargets the next emitted
+                            // instruction to its upstream source position.
+                            self.pending_loc = Some(SourceLoc::new(
+                                l.file.clone(),
+                                l.line,
+                                l.column,
+                            ));
                             self.program.locs.push(l);
                         } else {
                             self.diags.push(err(line, "invalid #loc declaration"));
@@ -240,9 +256,13 @@ impl Parser {
             return;
         };
         let fname = self.program.functions[fi].sig.display_name().to_string();
-        let Some(ins) = parse_instr::parse_instruction(line, &fname, &mut self.diags) else {
+        let Some(mut ins) = parse_instr::parse_instruction(line, &fname, &mut self.diags) else {
             return;
         };
+        // One-shot upstream retargeting, consuming the pending #loc.
+        if let Some(upstream) = self.pending_loc.take() {
+            ins.loc = upstream;
+        }
         if self.current_block.is_none() {
             let block = Block::new("L_ENTRY", line[0].loc.clone());
             self.program.functions[fi].blocks.push(block);
