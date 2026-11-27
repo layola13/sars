@@ -93,6 +93,36 @@ fn is_constant(ctx: &RuleCtx, op: &Operand) -> bool {
     }
 }
 
+/// A named `@const` symbol (as opposed to a numeric literal). sci seeds these
+/// as `active | immutable` (`const_trap.zig:44-55`) and rejects move/release/
+/// write/return by move; sars tracks them via `program.consts`.
+fn is_named_const<'a>(ctx: &RuleCtx, op: &'a Operand) -> Option<&'a str> {
+    match op {
+        Operand::Reg(name) if ctx.program.consts.iter().any(|c| c.name == *name) => Some(name),
+        _ => None,
+    }
+}
+
+fn const_mutation(
+    ctx: &mut RuleCtx,
+    op: &Operand,
+    action: &str,
+    loc: &SourceLoc,
+) -> bool {
+    if let Some(name) = is_named_const(ctx, op) {
+        ctx.report(
+            Trap::ConstMutation,
+            format!("immutable constant '{name}' cannot be {action}"),
+            loc,
+            Some(name),
+            None,
+            false,
+        );
+        return true;
+    }
+    false
+}
+
 fn read_operand<S: RegStateBackend>(ctx: &mut RuleCtx, op: &Operand, state: &S, loc: &SourceLoc) {
     if is_constant(ctx, op) {
         return;
@@ -135,6 +165,11 @@ fn read_operand<S: RegStateBackend>(ctx: &mut RuleCtx, op: &Operand, state: &S, 
 }
 
 fn consume<S: RegStateBackend>(ctx: &mut RuleCtx, state: &mut S, op: &Operand, loc: &SourceLoc) {
+    // sci writeCheck/consumeValue: const data cannot be moved (it has no
+    // ownership to transfer). Literals still pass through as no-ops.
+    if const_mutation(ctx, op, "moved", loc) {
+        return;
+    }
     if is_constant(ctx, op) {
         return;
     }
@@ -309,6 +344,10 @@ fn add_borrow<S: RegStateBackend>(
 }
 
 fn release<S: RegStateBackend>(ctx: &mut RuleCtx, state: &mut S, reg: &str, loc: &SourceLoc) {
+    // sci assign_branch.zig:85-86: releasing const data is a const mutation.
+    if const_mutation(ctx, &Operand::Reg(reg.to_string()), "released", loc) {
+        return;
+    }
     if matches!(state.state_of(reg), RegState::Owned { kind: RegKind::Scalar }) {
         return;
     }
@@ -711,6 +750,8 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
                     Some(sa_ir::CapPrefix::Borrow) | Some(sa_ir::CapPrefix::Raw)
                 );
                 if by_value {
+                    // sci armReturn: immutable registers cannot be returned by move.
+                    const_mutation(ctx, operand, "returned by move", loc);
                     if let Operand::Reg(name) = operand {
                         state.set(name, RegState::Moved);
                     }
