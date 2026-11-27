@@ -177,6 +177,18 @@ impl Parser {
                             self.diags.push(err(line, "invalid #npm_bind declaration"));
                         }
                     }
+                    "#version" => {
+                        // sci line_classifier.zig:445-455: `#version <digits>`
+                        // is a metadata line (no emitted instruction). Other
+                        // forms are unknown/invalid.
+                        let valid = line.len() == 2
+                            && line[1].kind == TokenKind::Number
+                            && !line[1].text.is_empty()
+                            && line[1].text.bytes().all(|b| b.is_ascii_digit());
+                        if !valid {
+                            self.diags.push(err(line, "invalid #version declaration"));
+                        }
+                    }
                     other => self.diags.push(err(line, &format!("unknown hash directive {other}"))),
                 }
             }
