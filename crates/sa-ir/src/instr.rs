@@ -288,7 +288,13 @@ impl Operand {
 
     pub fn parse(text: &str) -> Self {
         let mut t = text.trim();
-        while let Some(rest) = t.strip_prefix('&').or_else(|| t.strip_prefix('^')).or_else(|| t.strip_prefix('*')) {
+        // sci stripTextOperandPrefix (interp/memory.zig:346-353) removes exactly
+        // one capability prefix; stacked prefixes are not silently collapsed.
+        if let Some(rest) = t
+            .strip_prefix('&')
+            .or_else(|| t.strip_prefix('^'))
+            .or_else(|| t.strip_prefix('*'))
+        {
             t = rest.trim();
         }
         if let Some(rest) = t.strip_prefix("utf8:\"") {
