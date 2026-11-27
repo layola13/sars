@@ -1,0 +1,30 @@
+A1-a STATE CARRIER — fail-before / pass-after
+baseline_commit=69a5ff79bc39b557394b8571eee1f89ad96fe7a4
+unit_test=crates/sa-verify/tests/a1a_state_carrier.rs
+
+== UNIT TEST ==
+before_rc=101
+before_result=no test result line
+before_error=error[E0432]: unresolved import `sa_verify::mask`
+after_rc=0
+after_result=test result: ok. 5 passed; 0 failed
+  test a1a_composite_masks_are_representable ... ok
+  test a1a_mask_name_matches_sci_canonical_states ... ok
+  test a1a_composite_states_anchor_the_truth_table ... ok
+  test a1a_truth_table_matches_sci_20_entries ... ok
+  test a1a_twelve_bit_constants_match_sci ... ok
+
+== WORKSPACE REGRESSION ==
+workspace_rc=0
+workspace_results=test result: ok. 17 passed; 0 failed | test result: ok. 10 passed; 0 failed | test result: ok. 23 passed; 0 failed | test result: ok. 44 passed; 0 failed | test result: ok. 40 passed; 0 failed | test result: ok. 20 passed; 0 failed | test result: ok. 2 passed; 0 failed | test result: ok. 7 passed; 0 failed | test result: ok. 24 passed; 0 failed | test result: ok. 29 passed; 0 failed | test result: ok. 5 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed | test result: ok. 0 passed; 0 failed
+
+== 968-NAME `sars check` PARITY ==
+total=968
+before_check_pass=962
+after_check_pass=962
+pass_to_fail=0
+fail_to_pass=0
+REGRESSIONS: 
+RECOVERED: 
+before_binary=/tmp/opencode/a1a_evidence/before/target/release/sars
+after_binary=/tmp/opencode/a1a_evidence/after/target/release/sars
