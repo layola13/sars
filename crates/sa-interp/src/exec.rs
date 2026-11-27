@@ -355,7 +355,13 @@ impl<'a> Interpreter<'a> {
                     let ty = ins.ty.unwrap_or(PrimType::I64);
                     let old = self.memory.load(ptr, ty)?;
                     let rhs = self.resolve(frame, value)?;
-                    let new = apply_op(rmw_op(*op), &[old.clone(), rhs], Some(ty))?;
+                    let new = match op {
+                        AtomicRmwOp::Umin | AtomicRmwOp::Umax
+                        | AtomicRmwOp::Smin | AtomicRmwOp::Smax => {
+                            rmw_minmax(*op, &old, &rhs, Some(ty))
+                        }
+                        _ => apply_op(rmw_op(*op), &[old.clone(), rhs], Some(ty))?,
+                    };
                     self.memory.store(ptr, ty, &new)?;
                     set_dest(frame, ins, old);
                 }
@@ -543,10 +549,44 @@ fn rmw_op(op: AtomicRmwOp) -> OpKind {
         AtomicRmwOp::Or => OpKind::Or,
         AtomicRmwOp::Xor => OpKind::Xor,
         AtomicRmwOp::Xchg => OpKind::Bitcast,
-        AtomicRmwOp::Umin => OpKind::Ult,
-        AtomicRmwOp::Umax => OpKind::Ugt,
-        AtomicRmwOp::Smin => OpKind::Slt,
-        AtomicRmwOp::Smax => OpKind::Sgt,
+        AtomicRmwOp::Umin
+        | AtomicRmwOp::Umax
+        | AtomicRmwOp::Smin
+        | AtomicRmwOp::Smax => {
+            unreachable!("min/max rmw uses the reduction path, not a comparison op")
+        }
+    }
+}
+
+/// sci `atomicRmwApplyImpl` (`interpreter_init.zig:383-405`): min/max are
+/// reductions that return one of the operands, not comparisons returning 0/1.
+/// The previous mapping to `Ult/Ugt/Slt/Sgt` stored a boolean into memory —
+/// a real semantic bug. Signed ops compare as i128; unsigned ops compare as
+/// u128; the chosen operand is masked to the instruction's type width.
+fn rmw_minmax(op: AtomicRmwOp, old: &Value, rhs: &Value, ty: Option<PrimType>) -> Value {
+    let x = old.to_i128();
+    let y = rhs.to_i128();
+    let take_old = match op {
+        AtomicRmwOp::Umin => (x as u128) <= (y as u128),
+        AtomicRmwOp::Umax => (x as u128) >= (y as u128),
+        AtomicRmwOp::Smin => x <= y,
+        AtomicRmwOp::Smax => x >= y,
+        _ => unreachable!(),
+    };
+    Value::Int(mask_i128(if take_old { x } else { y }, ty))
+}
+
+fn mask_i128(v: i128, ty: Option<PrimType>) -> i128 {
+    let n = ty.map(|t| t.bits()).unwrap_or(128).min(128);
+    if n == 0 || n >= 128 {
+        return v;
+    }
+    let modulus = 1i128 << n;
+    let u = v & (modulus - 1);
+    if ty.map(|t| t.is_signed()).unwrap_or(true) && u & (1i128 << (n - 1)) != 0 {
+        u - modulus
+    } else {
+        u
     }
 }
 
