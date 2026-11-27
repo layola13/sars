@@ -1,4 +1,5 @@
 pub mod capability;
+pub mod report;
 pub mod cfg;
 pub mod mask;
 pub mod merge;
