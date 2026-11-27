@@ -19,8 +19,8 @@ pub fn dispatch(command: Command) -> i32 {
             file,
             json: as_json,
             no_verify,
-            regstate,
-        } => check(&file, as_json, no_verify, regstate),
+            legacy_state,
+        } => check(&file, as_json, no_verify, legacy_state),
         Command::Run { file, trace, gas } => run(&file, trace, gas),
         Command::BuildJs {
             file,
@@ -76,9 +76,9 @@ fn fail(diags: &[Diagnostic], file: &str, as_json: bool) -> i32 {
     1
 }
 
-fn check(file: &str, as_json: bool, no_verify: bool, regstate: bool) -> i32 {
+fn check(file: &str, as_json: bool, no_verify: bool, legacy_state: bool) -> i32 {
     let opts = sa_verify::VerifyOptions {
-        use_regstate: regstate,
+        use_regstate: !legacy_state,
         ..sa_verify::VerifyOptions::default()
     };
     match pipeline::compile_with_options(file, !no_verify, opts) {

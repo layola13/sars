@@ -566,7 +566,7 @@ fn check_leaks<S: RegStateBackend>(ctx: &mut RuleCtx, state: &S, loc: &SourceLoc
             if state.escaped_contains(name) {
                 return false;
             }
-            if matches!(reg_state, RegState::Owned { kind: RegKind::Alloc }) {
+            if state.is_owned_alloc(name) {
                 return true;
             }
             if matches!(reg_state, RegState::Owned { kind: RegKind::Param })

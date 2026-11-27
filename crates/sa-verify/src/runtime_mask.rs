@@ -1,6 +1,7 @@
-//! Stage-1 runtime integration: route uncoupled capability ops through the
-//! A1 truth table (`mask::lookup`). Call/FFI ops intentionally return no plan
-//! and stay on the `FnState`/`RegState` bypass table.
+//! A1 convergence runtime integration: route alloc/borrow/move/release and
+//! FFI reinterpretation ops through the truth table (`mask::lookup`). Call,
+//! CallIndirect and Try still use the imperative capability rules; their
+//! fallible/signature state is broader than the 20-row transition table.
 
 use crate::mask::{self, Op, TrapKind};
 use crate::state::RegStateBackend;
@@ -11,6 +12,11 @@ pub struct LookupPlan {
     pub reg: String,
     pub op: Op,
     pub prev_mask: u16,
+    /// Registers that receive `new_mask` when the transition is a FFI
+    /// reinterpretation (`raw_cast` / `assume_safe` / `assume_borrow`). Borrow
+    /// views are intentionally excluded: their mask is derived from the
+    /// source plus the borrow-view bit by `add_borrow`.
+    pub ffi_dest: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,18 +42,18 @@ pub fn trap_of(trap: TrapKind) -> Trap {
 }
 
 pub fn plan<S: RegStateBackend>(ins: &Instruction, state: &S) -> Option<LookupPlan> {
-    let (reg, op) = match &ins.kind {
+    let (reg, op, ffi_dest) = match &ins.kind {
         InstructionKind::Alloc { .. } | InstructionKind::StackAlloc { .. } => {
-            (ins.dest.as_deref()?, Op::Alloc)
+            (ins.dest.as_deref()?, Op::Alloc, None)
         }
-        InstructionKind::Move { src } => (reg_of(src)?, Op::Move),
+        InstructionKind::Move { src } => (reg_of(src)?, Op::Move, None),
         InstructionKind::Release { reg } => {
             let op = if state.borrow_origin_contains(reg) {
                 Op::ReleaseBorrow
             } else {
                 Op::ReleaseOwn
             };
-            (reg.as_str(), op)
+            (reg.as_str(), op, None)
         }
         InstructionKind::Borrow { src, mutable } => {
             let reg = reg_of(src)?;
@@ -62,7 +68,12 @@ pub fn plan<S: RegStateBackend>(ins: &Instruction, state: &S) -> Option<LookupPl
             } else {
                 Op::BorrowRead
             };
-            (reg, op)
+            (reg, op, None)
+        }
+        InstructionKind::RawCast { src } => (reg_of(src)?, Op::FfiRawCast, ins.dest.clone()),
+        InstructionKind::AssumeSafe { src } => (reg_of(src)?, Op::FfiAssumeSafe, ins.dest.clone()),
+        InstructionKind::AssumeBorrow { src, .. } => {
+            (reg_of(src)?, Op::FfiAssumeBorrow, ins.dest.clone())
         }
         _ => return None,
     };
@@ -70,6 +81,7 @@ pub fn plan<S: RegStateBackend>(ins: &Instruction, state: &S) -> Option<LookupPl
         reg: reg.to_string(),
         op,
         prev_mask: state.mask_of(reg),
+        ffi_dest,
     })
 }
 
@@ -80,7 +92,20 @@ pub fn apply<S: RegStateBackend>(
 ) -> Option<Stage1Decision> {
     let row = mask::lookup(plan.prev_mask, plan.op)?;
     state.set_mask(&plan.reg, row.new_mask);
-    let confirmed_trap = if row.legal || !bypass_errored {
+    if let Some(dest) = &plan.ffi_dest {
+        state.set_mask(dest, row.new_mask);
+    }
+    // The truth table is the primary legality authority: an illegal row is
+    // reported even when the imperative bypass rules accepted the operation.
+    // When the bypass already reported a diagnostic, keep the legacy message
+    // and avoid a duplicate; the mask transition still lands.
+    // `Alloc` is confirmation-only on purpose. The canonical 0x08 row in the
+    // 20-row table is a teaching invariant, while sci's live
+    // `CapabilityTable.noteAlloc` explicitly restarts a consumed slot as
+    // Active. Keeping Alloc on the bypass path preserves that live semantics;
+    // every other planned op is authoritative.
+    let confirmation_only = matches!(plan.op, Op::Alloc);
+    let confirmed_trap = if row.legal || bypass_errored || confirmation_only {
         None
     } else {
         Some(row.trap.map(trap_of).unwrap_or(Trap::CapabilityMismatch))

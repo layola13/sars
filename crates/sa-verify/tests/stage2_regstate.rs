@@ -47,14 +47,14 @@ fn summary(result: &Result<sa_verify::VerifyReport, Vec<Diagnostic>>) -> Vec<(Tr
 }
 
 #[test]
-fn stage2_new_path_is_default_off() {
-    assert!(!VerifyOptions::default().use_regstate);
-    let on = opts(true);
-    assert!(on.use_regstate);
-    assert_eq!(on.max_gas, VerifyOptions::default().max_gas);
-    assert_eq!(on.check_leaks, VerifyOptions::default().check_leaks);
-    assert_eq!(on.check_capabilities, VerifyOptions::default().check_capabilities);
-    assert_eq!(on.check_phi, VerifyOptions::default().check_phi);
+fn stage3_new_path_is_default_on() {
+    assert!(VerifyOptions::default().use_regstate);
+    let off = opts(false);
+    assert!(!off.use_regstate);
+    assert_eq!(off.max_gas, VerifyOptions::default().max_gas);
+    assert_eq!(off.check_leaks, VerifyOptions::default().check_leaks);
+    assert_eq!(off.check_capabilities, VerifyOptions::default().check_capabilities);
+    assert_eq!(off.check_phi, VerifyOptions::default().check_phi);
 }
 
 #[test]

@@ -33,6 +33,11 @@ cargo build --release
   installed via rustup; use `export PATH=$HOME/.cargo/bin:$PATH`).
 - 966/970 `sci/demos/rosetta/*/main.sa` files pass `sa check`; the remaining
   four (243, 253, 257, 335) also fail upstream `sci`'s own `sa check`.
+  The verifier now defaults to the collapsed `CapabilityState` carrier with the
+  A1 truth table as the primary legality authority for alloc/borrow/move/release
+  and FFI reinterpretation ops; `sars check --legacy-state` opts back into the
+  old `FnState` backend (see `DELIVERY/A1_STAGE3_CONVERGENCE.md`). Default and
+  legacy paths are byte-identical across all 968 rosetta `check` runs.
   `[MACRO]` / `EXPAND` bodies, multi-destination `cmpxchg`, vtable and
   `struct`/`hex` constants, `#npm_bind` directives, `@target` source regions,
   two-target `br_null`, address-based `take`, and import-relative resolution

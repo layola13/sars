@@ -42,18 +42,27 @@ fn stage1_uncoupled_ops_get_lookup_plans() {
 }
 
 #[test]
-fn stage1_call_and_ffi_ops_stay_on_bypass() {
+fn stage3_call_ops_stay_on_bypass_ffi_ops_get_plans() {
     let state = FnState::default();
-    let ffi_ops = [
+    for kind in [
         InstructionKind::Call { target: "f".into(), args: vec![] },
         InstructionKind::CallIndirect { target: reg("fp"), args: vec![] },
-        InstructionKind::RawCast { src: reg("a") },
-        InstructionKind::AssumeSafe { src: reg("a") },
-        InstructionKind::AssumeBorrow { src: reg("a"), mutable: false },
         InstructionKind::Try { src: reg("a") },
-    ];
-    for kind in ffi_ops {
+    ] {
         assert!(plan(&ins(kind, Some("out")), &state).is_none());
+    }
+    for (kind, expected) in [
+        (InstructionKind::RawCast { src: reg("a") }, Op::FfiRawCast),
+        (InstructionKind::AssumeSafe { src: reg("a") }, Op::FfiAssumeSafe),
+        (
+            InstructionKind::AssumeBorrow { src: reg("a"), mutable: false },
+            Op::FfiAssumeBorrow,
+        ),
+    ] {
+        let plan = plan(&ins(kind, Some("out")), &state).expect("ffi op has a truth-table plan");
+        assert_eq!(plan.op, expected);
+        assert_eq!(plan.reg, "a");
+        assert_eq!(plan.ffi_dest.as_deref(), Some("out"));
     }
 }
 
@@ -84,7 +93,7 @@ fn stage1_table_drives_mask_state_for_legal_rows() {
 }
 
 #[test]
-fn stage1_illegal_row_confirms_bypass_error_only() {
+fn stage3_illegal_rows_are_authoritative_except_alloc() {
     let mut state = FnState::default();
     state.set("a", RegState::Borrowed { shared: 1, mutable: false });
     let plan = plan(
@@ -96,10 +105,10 @@ fn stage1_illegal_row_confirms_bypass_error_only() {
 
     let confirmed = apply(&mut state, &plan, true).unwrap();
     assert!(!confirmed.legal);
-    assert_eq!(confirmed.confirmed_trap, Some(Trap::ReadWriteConflict));
+    assert_eq!(confirmed.confirmed_trap, None);
 
-    let deferred = apply(&mut state, &plan, false).unwrap();
-    assert_eq!(deferred.confirmed_trap, None);
+    let authoritative = apply(&mut state, &plan, false).unwrap();
+    assert_eq!(authoritative.confirmed_trap, Some(Trap::ReadWriteConflict));
 }
 
 #[test]
@@ -115,6 +124,21 @@ fn stage1_unlisted_pair_defers_to_bypass() {
     assert_eq!(plan.prev_mask, 0x02);
     assert!(apply(&mut state, &plan, true).is_none());
     assert_eq!(state.mask_of("a"), 0x02);
+}
+
+#[test]
+fn stage3_alloc_on_consumed_defers_to_live_notealloc_semantics() {
+    let mut state = FnState::default();
+    state.set("a", RegState::Moved);
+    state.set_mask("a", 0x08);
+    let plan = plan(
+        &ins(InstructionKind::Alloc { size: reg("n") }, Some("a")),
+        &state,
+    )
+    .unwrap();
+    let decision = apply(&mut state, &plan, false).unwrap();
+    assert!(!decision.legal);
+    assert_eq!(decision.confirmed_trap, None);
 }
 
 #[test]

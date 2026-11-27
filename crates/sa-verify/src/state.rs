@@ -169,6 +169,7 @@ pub trait RegStateBackend: Clone + Default {
     fn origin_base_entry_or_insert(&mut self, reg: &str, state: RegState);
     fn origin_base_get(&self, reg: &str) -> Option<RegState>;
     fn origin_base_remove(&mut self, reg: &str) -> Option<RegState>;
+    fn is_owned_alloc(&self, reg: &str) -> bool;
     fn escaped_contains(&self, reg: &str) -> bool;
     fn escaped_insert(&mut self, reg: &str);
     fn borrow_params_contains(&self, reg: &str) -> bool;
@@ -225,6 +226,10 @@ impl RegStateBackend for FnState {
 
     fn origin_base_remove(&mut self, reg: &str) -> Option<RegState> {
         self.origin_base.remove(reg)
+    }
+
+    fn is_owned_alloc(&self, reg: &str) -> bool {
+        matches!(self.state_of(reg), RegState::Owned { kind: RegKind::Alloc })
     }
 
     fn escaped_contains(&self, reg: &str) -> bool {

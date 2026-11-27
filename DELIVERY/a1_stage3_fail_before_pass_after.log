@@ -1,0 +1,29 @@
+A1 stage-3 fail-before / pass-after evidence
+===========================================
+
+基线树: git worktree /tmp/sars-a1-before @ 4043ef0 (origin/main before this change)
+新测试: crates/sa-verify/tests/stage1_lookup_wiring.rs, stage2_regstate.rs
+
+FAIL-BEFORE (基线树 + 新测试，cargo test -p sa-verify --test stage1_lookup_wiring --test stage2_regstate)
+  rc=101
+  error[E0609]: no field `ffi_dest` on type `LookupPlan`
+  error: could not compile `sa-verify` (test "stage1_lookup_wiring") due to 1 previous error
+
+PASS-AFTER (本轮工作树，cargo test --workspace)
+  rc=0
+  test stage3_call_ops_stay_on_bypass_ffi_ops_get_plans ... ok
+  test stage3_illegal_rows_are_authoritative_except_alloc ... ok
+  test stage3_alloc_on_consumed_defers_to_live_notealloc_semantics ... ok
+  test stage3_new_path_is_default_on ... ok
+  test result: ok. 8 passed; 0 failed (sa-verify stage1_lookup_wiring)
+  test result: ok. 5 passed; 0 failed (sa-verify stage2_regstate)
+  所有其他 crate 与 doc-test: 0 failed
+
+968-NAME rc BUCKETS (default path)
+  total=968
+  rc=0 count=962 sha256=830304a687cf6de03c1cb9650ba7e51051906a577918bb48a762e87b980e2922
+  rc=1 count=6   sha256=8f89c17e76e91f9538cebcdd5bbca74b00907be77ff8f0d2baace7adeb254d55
+
+DEFAULT vs --legacy-state BYTES
+  total=968 identical=968 diff=0
+  diff_names=

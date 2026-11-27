@@ -13,7 +13,7 @@ pub enum Command {
         file: String,
         json: bool,
         no_verify: bool,
-        regstate: bool,
+        legacy_state: bool,
     },
     Run {
         file: String,
@@ -57,7 +57,7 @@ pub enum Command {
 pub const USAGE: &str = concat!(
     "Usage: sa <command> [options]\n\n",
     "Commands:\n",
-    "  check <file> [--json] [--no-verify] [--regstate]\n",
+    "  check <file> [--json] [--no-verify] [--legacy-state]\n",
     "  run <file> [--trace] [--gas N]\n",
     "  build-js <file> [-o <out>] [--format esm|cjs] [-g|--no-debug] [--entry NAME] [--emit-dts]\n",
     "  build-wasm <file> [-o <out>] [--entry NAME]\n",
@@ -122,7 +122,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
             let mut file = None;
             let mut json = false;
             let mut no_verify = false;
-            let mut regstate = false;
+            let mut legacy_state = false;
             let mut i = 0;
             while i < rest.len() {
                 let arg = rest[i].as_str();
@@ -130,7 +130,8 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                 match arg {
                     "--json" => json = true,
                     "--no-verify" => no_verify = true,
-                    "--regstate" => regstate = true,
+                    "--regstate" => legacy_state = false,
+                    "--legacy-state" => legacy_state = true,
                     s if s.starts_with('-') => {
                         return Err(error(format!("unknown option: {s}")));
                     }
@@ -141,7 +142,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                 file: require_file(file, "check")?,
                 json,
                 no_verify,
-                regstate,
+                legacy_state,
             })
         }
         "run" => {
@@ -346,7 +347,7 @@ mod tests {
                 file: "a.sa".to_string(),
                 json: false,
                 no_verify: false,
-                regstate: false
+                legacy_state: false
             }
         );
         assert_eq!(
@@ -355,7 +356,7 @@ mod tests {
                 file: "a.sa".to_string(),
                 json: true,
                 no_verify: true,
-                regstate: false
+                legacy_state: false
             }
         );
         assert_eq!(
@@ -364,7 +365,16 @@ mod tests {
                 file: "a.sa".to_string(),
                 json: false,
                 no_verify: false,
-                regstate: true
+                legacy_state: false
+            }
+        );
+        assert_eq!(
+            parse_args(&args(&["check", "a.sa", "--legacy-state"])).unwrap(),
+            Command::Check {
+                file: "a.sa".to_string(),
+                json: false,
+                no_verify: false,
+                legacy_state: true
             }
         );
     }

@@ -34,7 +34,7 @@ impl Default for VerifyOptions {
             check_leaks: true,
             check_capabilities: true,
             check_phi: true,
-            use_regstate: false,
+            use_regstate: true,
         }
     }
 }

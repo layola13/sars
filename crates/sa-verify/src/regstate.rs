@@ -166,6 +166,23 @@ impl CapabilityState {
         CapabilityMask::new(self.mask_of(reg))
     }
 
+    /// Live owned allocation check driven by the single capability carrier.
+    /// The legacy backend answers the same question from `RegState::Owned{Alloc}`;
+    /// here the mask decides liveness and `kind` only identifies the slot.
+    pub fn is_owned_alloc(&self, reg: &str) -> bool {
+        self.entries
+            .get(reg)
+            .map(|entry| {
+                let mask = entry.effective_mask();
+                entry.variant == Variant::Owned
+                    && entry.kind == RegKind::Alloc
+                    && mask & bit::ACTIVE != 0
+                    && mask & bit::CONSUMED == 0
+                    && mask & bit::BORROW_VIEW == 0
+            })
+            .unwrap_or(false)
+    }
+
     fn entry_mut(&mut self, reg: &str) -> &mut CapEntry {
         self.entries
             .entry(reg.to_string())
@@ -287,6 +304,10 @@ impl RegStateBackend for CapabilityState {
 
     fn origin_base_remove(&mut self, reg: &str) -> Option<RegState> {
         self.entries.get_mut(reg).and_then(|entry| entry.base.take())
+    }
+
+    fn is_owned_alloc(&self, reg: &str) -> bool {
+        CapabilityState::is_owned_alloc(self, reg)
     }
 
     fn escaped_contains(&self, reg: &str) -> bool {
