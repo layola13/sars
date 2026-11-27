@@ -30,7 +30,7 @@ impl Default for JsOptions {
             format: JsFormat::Esm,
             debug: false,
             entry: None,
-            memory_pages: 2,
+            memory_pages: 256,
         }
     }
 }

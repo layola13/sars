@@ -99,13 +99,13 @@ fn default_options_match_spec() {
     assert_eq!(o.format, JsFormat::Esm);
     assert!(!o.debug);
     assert!(o.entry.is_none());
-    assert_eq!(o.memory_pages, 2);
+    assert_eq!(o.memory_pages, 256);
 }
 
 #[test]
 fn empty_program_emits_valid_esm() {
     let js = emit_js(&Program::new(), &JsOptions::default()).unwrap();
-    assert!(js.contains("const SA_PAGES = 2;"));
+    assert!(js.contains("const SA_PAGES = 256;"));
     assert!(js.contains("const memory = new ArrayBuffer(SA_SIZE);"));
     assert!(js.contains("function sa_alloc("));
     assert!(js.contains("function sa_load("));
