@@ -13,6 +13,7 @@ pub enum Command {
         file: String,
         json: bool,
         no_verify: bool,
+        regstate: bool,
     },
     Run {
         file: String,
@@ -56,7 +57,7 @@ pub enum Command {
 pub const USAGE: &str = concat!(
     "Usage: sa <command> [options]\n\n",
     "Commands:\n",
-    "  check <file> [--json] [--no-verify]\n",
+    "  check <file> [--json] [--no-verify] [--regstate]\n",
     "  run <file> [--trace] [--gas N]\n",
     "  build-js <file> [-o <out>] [--format esm|cjs] [-g|--no-debug] [--entry NAME] [--emit-dts]\n",
     "  build-wasm <file> [-o <out>] [--entry NAME]\n",
@@ -121,6 +122,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
             let mut file = None;
             let mut json = false;
             let mut no_verify = false;
+            let mut regstate = false;
             let mut i = 0;
             while i < rest.len() {
                 let arg = rest[i].as_str();
@@ -128,6 +130,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                 match arg {
                     "--json" => json = true,
                     "--no-verify" => no_verify = true,
+                    "--regstate" => regstate = true,
                     s if s.starts_with('-') => {
                         return Err(error(format!("unknown option: {s}")));
                     }
@@ -138,6 +141,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                 file: require_file(file, "check")?,
                 json,
                 no_verify,
+                regstate,
             })
         }
         "run" => {
@@ -341,7 +345,8 @@ mod tests {
             Command::Check {
                 file: "a.sa".to_string(),
                 json: false,
-                no_verify: false
+                no_verify: false,
+                regstate: false
             }
         );
         assert_eq!(
@@ -349,7 +354,17 @@ mod tests {
             Command::Check {
                 file: "a.sa".to_string(),
                 json: true,
-                no_verify: true
+                no_verify: true,
+                regstate: false
+            }
+        );
+        assert_eq!(
+            parse_args(&args(&["check", "a.sa", "--regstate"])).unwrap(),
+            Command::Check {
+                file: "a.sa".to_string(),
+                json: false,
+                no_verify: false,
+                regstate: true
             }
         );
     }

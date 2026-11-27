@@ -3,7 +3,7 @@
 //! and stay on the `FnState`/`RegState` bypass table.
 
 use crate::mask::{self, Op, TrapKind};
-use crate::state::FnState;
+use crate::state::RegStateBackend;
 use sa_ir::{Instruction, InstructionKind, Operand, Trap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,14 +35,14 @@ pub fn trap_of(trap: TrapKind) -> Trap {
     }
 }
 
-pub fn plan(ins: &Instruction, state: &FnState) -> Option<LookupPlan> {
+pub fn plan<S: RegStateBackend>(ins: &Instruction, state: &S) -> Option<LookupPlan> {
     let (reg, op) = match &ins.kind {
         InstructionKind::Alloc { .. } | InstructionKind::StackAlloc { .. } => {
             (ins.dest.as_deref()?, Op::Alloc)
         }
         InstructionKind::Move { src } => (reg_of(src)?, Op::Move),
         InstructionKind::Release { reg } => {
-            let op = if state.borrow_origin.contains_key(reg) {
+            let op = if state.borrow_origin_contains(reg) {
                 Op::ReleaseBorrow
             } else {
                 Op::ReleaseOwn
@@ -73,8 +73,8 @@ pub fn plan(ins: &Instruction, state: &FnState) -> Option<LookupPlan> {
     })
 }
 
-pub fn apply(
-    state: &mut FnState,
+pub fn apply<S: RegStateBackend>(
+    state: &mut S,
     plan: &LookupPlan,
     bypass_errored: bool,
 ) -> Option<Stage1Decision> {

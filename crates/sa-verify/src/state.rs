@@ -133,7 +133,7 @@ impl FnState {
     }
 }
 
-fn merge_reg(a: &RegState, b: &RegState) -> RegState {
+pub(crate) fn merge_reg(a: &RegState, b: &RegState) -> RegState {
     if a == b {
         return a.clone();
     }
@@ -154,4 +154,107 @@ fn merge_reg(a: &RegState, b: &RegState) -> RegState {
         };
     }
     RegState::Conflict
+}
+
+pub trait RegStateBackend: Clone + Default {
+    fn state_of(&self, reg: &str) -> RegState;
+    fn set(&mut self, reg: &str, state: RegState);
+    fn mask_of(&self, reg: &str) -> u16;
+    fn set_mask(&mut self, reg: &str, mask: u16);
+    fn fallible_get(&self, reg: &str) -> Option<bool>;
+    fn fallible_insert(&mut self, reg: &str, value: bool);
+    fn borrow_origin_contains(&self, reg: &str) -> bool;
+    fn borrow_origin_insert(&mut self, dst: &str, origin: &str);
+    fn borrow_origin_remove(&mut self, reg: &str) -> Option<String>;
+    fn origin_base_entry_or_insert(&mut self, reg: &str, state: RegState);
+    fn origin_base_get(&self, reg: &str) -> Option<RegState>;
+    fn origin_base_remove(&mut self, reg: &str) -> Option<RegState>;
+    fn escaped_contains(&self, reg: &str) -> bool;
+    fn escaped_insert(&mut self, reg: &str);
+    fn borrow_params_contains(&self, reg: &str) -> bool;
+    fn borrow_params_insert(&mut self, reg: &str);
+    fn regs_snapshot(&self) -> Vec<(String, RegState)>;
+    fn is_same(&self, other: &Self) -> bool;
+    fn merge(&self, other: &Self) -> (Self, Vec<(String, RegState, RegState)>);
+}
+
+impl RegStateBackend for FnState {
+    fn state_of(&self, reg: &str) -> RegState {
+        FnState::state_of(self, reg)
+    }
+
+    fn set(&mut self, reg: &str, state: RegState) {
+        FnState::set(self, reg, state);
+    }
+
+    fn mask_of(&self, reg: &str) -> u16 {
+        FnState::mask_of(self, reg)
+    }
+
+    fn set_mask(&mut self, reg: &str, mask: u16) {
+        FnState::set_mask(self, reg, mask);
+    }
+
+    fn fallible_get(&self, reg: &str) -> Option<bool> {
+        self.fallible.get(reg).copied()
+    }
+
+    fn fallible_insert(&mut self, reg: &str, value: bool) {
+        self.fallible.insert(reg.to_string(), value);
+    }
+
+    fn borrow_origin_contains(&self, reg: &str) -> bool {
+        self.borrow_origin.contains_key(reg)
+    }
+
+    fn borrow_origin_insert(&mut self, dst: &str, origin: &str) {
+        self.borrow_origin.insert(dst.to_string(), origin.to_string());
+    }
+
+    fn borrow_origin_remove(&mut self, reg: &str) -> Option<String> {
+        self.borrow_origin.remove(reg)
+    }
+
+    fn origin_base_entry_or_insert(&mut self, reg: &str, state: RegState) {
+        self.origin_base.entry(reg.to_string()).or_insert(state);
+    }
+
+    fn origin_base_get(&self, reg: &str) -> Option<RegState> {
+        self.origin_base.get(reg).cloned()
+    }
+
+    fn origin_base_remove(&mut self, reg: &str) -> Option<RegState> {
+        self.origin_base.remove(reg)
+    }
+
+    fn escaped_contains(&self, reg: &str) -> bool {
+        self.escaped.contains(reg)
+    }
+
+    fn escaped_insert(&mut self, reg: &str) {
+        self.escaped.insert(reg.to_string());
+    }
+
+    fn borrow_params_contains(&self, reg: &str) -> bool {
+        self.borrow_params.contains(reg)
+    }
+
+    fn borrow_params_insert(&mut self, reg: &str) {
+        self.borrow_params.insert(reg.to_string());
+    }
+
+    fn regs_snapshot(&self) -> Vec<(String, RegState)> {
+        self.regs
+            .iter()
+            .map(|(name, state)| (name.clone(), state.clone()))
+            .collect()
+    }
+
+    fn is_same(&self, other: &Self) -> bool {
+        FnState::is_same(self, other)
+    }
+
+    fn merge(&self, other: &Self) -> (Self, Vec<(String, RegState, RegState)>) {
+        FnState::merge(self, other)
+    }
 }

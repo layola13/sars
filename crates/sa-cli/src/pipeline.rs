@@ -98,6 +98,14 @@ pub fn resolve_roots(path: &str) -> Vec<PathBuf> {
 }
 
 pub fn compile(path: &str, do_verify: bool) -> Result<Compilation, Vec<Diagnostic>> {
+    compile_with_options(path, do_verify, VerifyOptions::default())
+}
+
+pub fn compile_with_options(
+    path: &str,
+    do_verify: bool,
+    opts: VerifyOptions,
+) -> Result<Compilation, Vec<Diagnostic>> {
     let source = std::fs::read_to_string(path).map_err(|e| {
         vec![Diagnostic::new(
             Trap::ImportResolutionFailed,
@@ -110,7 +118,7 @@ pub fn compile(path: &str, do_verify: bool) -> Result<Compilation, Vec<Diagnosti
         .map_err(|e| e.into_diagnostics())?;
     let program = flat.into_program(path)?;
     let report = if do_verify {
-        match verify(&program, &VerifyOptions::default()) {
+        match verify(&program, &opts) {
             Ok(report) => Some(report),
             Err(diags) => return Err(diags.into_diagnostics()),
         }

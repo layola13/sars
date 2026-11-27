@@ -19,7 +19,8 @@ pub fn dispatch(command: Command) -> i32 {
             file,
             json: as_json,
             no_verify,
-        } => check(&file, as_json, no_verify),
+            regstate,
+        } => check(&file, as_json, no_verify, regstate),
         Command::Run { file, trace, gas } => run(&file, trace, gas),
         Command::BuildJs {
             file,
@@ -75,8 +76,12 @@ fn fail(diags: &[Diagnostic], file: &str, as_json: bool) -> i32 {
     1
 }
 
-fn check(file: &str, as_json: bool, no_verify: bool) -> i32 {
-    match pipeline::compile(file, !no_verify) {
+fn check(file: &str, as_json: bool, no_verify: bool, regstate: bool) -> i32 {
+    let opts = sa_verify::VerifyOptions {
+        use_regstate: regstate,
+        ..sa_verify::VerifyOptions::default()
+    };
+    match pipeline::compile_with_options(file, !no_verify, opts) {
         Ok(compilation) => {
             let functions = compilation.program.function_count();
             let instructions = compilation.program.instruction_count();

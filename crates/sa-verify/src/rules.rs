@@ -1,4 +1,4 @@
-use crate::state::{FnState, RegKind, RegState};
+use crate::state::{RegKind, RegState, RegStateBackend};
 use crate::{DiagSink, VerifyOptions};
 use sa_ir::{
     Capability, CapPrefix, Diagnostic, Instruction, InstructionKind, Operand, PrimType, Program,
@@ -41,8 +41,8 @@ impl<'a> RuleCtx<'a> {
     }
 }
 
-fn check_redefine(ctx: &mut RuleCtx, state: &FnState, reg: &str, loc: &SourceLoc) {
-    if state.escaped.contains(reg) {
+fn check_redefine<S: RegStateBackend>(ctx: &mut RuleCtx, state: &S, reg: &str, loc: &SourceLoc) {
+    if state.escaped_contains(reg) {
         return;
     }
     match state.state_of(reg) {
@@ -75,7 +75,7 @@ fn check_redefine(ctx: &mut RuleCtx, state: &FnState, reg: &str, loc: &SourceLoc
     }
 }
 
-fn define(ctx: &mut RuleCtx, ins: &Instruction, state: &mut FnState, new_state: RegState, loc: &SourceLoc) {
+fn define<S: RegStateBackend>(ctx: &mut RuleCtx, ins: &Instruction, state: &mut S, new_state: RegState, loc: &SourceLoc) {
     for dest in ins.all_dests() {
         let self_update = matches!(state.state_of(dest), RegState::Owned { .. })
             && ins.reads().iter().any(|op| matches!(op, Operand::Reg(name) if name == dest));
@@ -93,7 +93,7 @@ fn is_constant(ctx: &RuleCtx, op: &Operand) -> bool {
     }
 }
 
-fn read_operand(ctx: &mut RuleCtx, op: &Operand, state: &FnState, loc: &SourceLoc) {
+fn read_operand<S: RegStateBackend>(ctx: &mut RuleCtx, op: &Operand, state: &S, loc: &SourceLoc) {
     if is_constant(ctx, op) {
         return;
     }
@@ -119,7 +119,7 @@ fn read_operand(ctx: &mut RuleCtx, op: &Operand, state: &FnState, loc: &SourceLo
             false,
         ),
         RegState::Borrowed { mutable: true, .. } => {
-            if !state.borrow_origin.contains_key(name) {
+            if !state.borrow_origin_contains(name) {
                 ctx.report(
                     Trap::BorrowConflict,
                     format!("register '{name}' is exclusively borrowed and cannot be read"),
@@ -134,7 +134,7 @@ fn read_operand(ctx: &mut RuleCtx, op: &Operand, state: &FnState, loc: &SourceLo
     }
 }
 
-fn consume(ctx: &mut RuleCtx, state: &mut FnState, op: &Operand, loc: &SourceLoc) {
+fn consume<S: RegStateBackend>(ctx: &mut RuleCtx, state: &mut S, op: &Operand, loc: &SourceLoc) {
     if is_constant(ctx, op) {
         return;
     }
@@ -179,7 +179,7 @@ fn consume(ctx: &mut RuleCtx, state: &mut FnState, op: &Operand, loc: &SourceLoc
     }
 }
 
-fn is_scalar_operand(_ctx: &RuleCtx, state: &FnState, op: &Operand) -> bool {
+fn is_scalar_operand<S: RegStateBackend>(_ctx: &RuleCtx, state: &S, op: &Operand) -> bool {
     match op {
         Operand::Reg(name) => matches!(
             state.state_of(name),
@@ -189,7 +189,7 @@ fn is_scalar_operand(_ctx: &RuleCtx, state: &FnState, op: &Operand) -> bool {
     }
 }
 
-fn consume_assign(ctx: &mut RuleCtx, state: &mut FnState, op: &Operand, loc: &SourceLoc) {
+fn consume_assign<S: RegStateBackend>(ctx: &mut RuleCtx, state: &mut S, op: &Operand, loc: &SourceLoc) {
     if let Operand::Reg(name) = op {
         if matches!(state.state_of(name), RegState::Owned { kind: RegKind::Param }) {
             read_operand(ctx, op, state, loc);
@@ -199,9 +199,9 @@ fn consume_assign(ctx: &mut RuleCtx, state: &mut FnState, op: &Operand, loc: &So
     consume(ctx, state, op, loc);
 }
 
-fn add_borrow(
+fn add_borrow<S: RegStateBackend>(
     ctx: &mut RuleCtx,
-    state: &mut FnState,
+    state: &mut S,
     op: &Operand,
     mutable: bool,
     view: Option<&str>,
@@ -291,7 +291,7 @@ fn add_borrow(
             }
         }
         owned @ RegState::Owned { .. } => {
-            state.origin_base.entry(name.to_string()).or_insert(owned);
+            state.origin_base_entry_or_insert(name, owned);
             state.set(
                 name,
                 RegState::Borrowed { shared: if mutable { 0 } else { 1 }, mutable },
@@ -304,11 +304,11 @@ fn add_borrow(
             dest,
             RegState::Borrowed { shared: 1, mutable },
         );
-        state.borrow_origin.insert(dest.to_string(), name.to_string());
+        state.borrow_origin_insert(dest, name);
     }
 }
 
-fn release(ctx: &mut RuleCtx, state: &mut FnState, reg: &str, loc: &SourceLoc) {
+fn release<S: RegStateBackend>(ctx: &mut RuleCtx, state: &mut S, reg: &str, loc: &SourceLoc) {
     if matches!(state.state_of(reg), RegState::Owned { kind: RegKind::Scalar }) {
         return;
     }
@@ -330,11 +330,11 @@ fn release(ctx: &mut RuleCtx, state: &mut FnState, reg: &str, loc: &SourceLoc) {
             false,
         ),
         RegState::Owned { .. } => {
-            state.origin_base.remove(reg);
+            state.origin_base_remove(reg);
             state.set(reg, RegState::Released);
         }
         RegState::Borrowed { shared, mutable } => {
-            if let Some(origin) = state.borrow_origin.remove(reg) {
+            if let Some(origin) = state.borrow_origin_remove(reg) {
                 let mut restore = false;
                 if let RegState::Borrowed { shared: live, mutable: locked } = state.state_of(&origin) {
                     let next_shared = if mutable { live } else { live.saturating_sub(1) };
@@ -347,11 +347,9 @@ fn release(ctx: &mut RuleCtx, state: &mut FnState, reg: &str, loc: &SourceLoc) {
                 }
                 if restore {
                     let base = state
-                        .origin_base
-                        .get(&origin)
-                        .cloned()
+                        .origin_base_get(&origin)
                         .unwrap_or(RegState::Owned { kind: RegKind::Value });
-                    state.origin_base.remove(&origin);
+                    state.origin_base_remove(&origin);
                     state.set(&origin, base);
                 }
                 state.set(reg, RegState::Released);
@@ -392,7 +390,7 @@ fn check_atomic(ctx: &mut RuleCtx, addr: &str, order: sa_ir::AtomicOrdering, loc
     ctx.atomics.insert(addr.to_string(), order);
 }
 
-fn mark_escaped_alloc(state: &mut FnState, op: &Operand) {
+fn mark_escaped_alloc<S: RegStateBackend>(state: &mut S, op: &Operand) {
     if let Operand::Reg(name) = op {
         if matches!(
             state.state_of(name),
@@ -400,12 +398,12 @@ fn mark_escaped_alloc(state: &mut FnState, op: &Operand) {
                 kind: RegKind::Alloc | RegKind::Value
             }
         ) {
-            state.escaped.insert(name.clone());
+            state.escaped_insert(name);
         }
     }
 }
 
-fn apply_cap(ctx: &mut RuleCtx, state: &mut FnState, arg: &sa_ir::CallArg, loc: &SourceLoc) {
+fn apply_cap<S: RegStateBackend>(ctx: &mut RuleCtx, state: &mut S, arg: &sa_ir::CallArg, loc: &SourceLoc) {
     mark_escaped_alloc(state, &arg.value);
     match arg.cap {
         sa_ir::CapPrefix::Move => consume(ctx, state, &arg.value, loc),
@@ -438,9 +436,9 @@ fn apply_cap(ctx: &mut RuleCtx, state: &mut FnState, arg: &sa_ir::CallArg, loc: 
     }
 }
 
-fn handle_call(
+fn handle_call<S: RegStateBackend>(
     ctx: &mut RuleCtx,
-    state: &mut FnState,
+    state: &mut S,
     target: &str,
     args: &[sa_ir::CallArg],
     loc: &SourceLoc,
@@ -525,7 +523,7 @@ fn is_owned_pointer_param(ctx: &RuleCtx, name: &str) -> bool {
     })
 }
 
-fn check_leaks(ctx: &mut RuleCtx, state: &FnState, loc: &SourceLoc) {
+fn check_leaks<S: RegStateBackend>(ctx: &mut RuleCtx, state: &S, loc: &SourceLoc) {
     if !ctx.opts.check_leaks {
         return;
     }
@@ -562,25 +560,25 @@ fn check_leaks(ctx: &mut RuleCtx, state: &FnState, loc: &SourceLoc) {
         })
         .unwrap_or_default();
     let mut leaked: Vec<String> = state
-        .regs
+        .regs_snapshot()
         .iter()
         .filter(|(name, reg_state)| {
-            if state.escaped.contains(*name) {
+            if state.escaped_contains(name) {
                 return false;
             }
             if matches!(reg_state, RegState::Owned { kind: RegKind::Alloc }) {
                 return true;
             }
             if matches!(reg_state, RegState::Owned { kind: RegKind::Param })
-                && !state.borrow_params.contains(*name)
-                && !call_arg_regs.contains(*name)
+                && !state.borrow_params_contains(name)
+                && !call_arg_regs.contains(name)
                 && is_owned_pointer_param(ctx, name)
             {
                 return true;
             }
             indirect_dispatch
-                && call_arg_regs.contains(*name)
-                && state.borrow_params.contains(*name)
+                && call_arg_regs.contains(name)
+                && state.borrow_params_contains(name)
                 && !matches!(reg_state, RegState::Moved | RegState::Released)
         })
         .map(|(name, _)| name.clone())
@@ -598,7 +596,7 @@ fn check_leaks(ctx: &mut RuleCtx, state: &FnState, loc: &SourceLoc) {
     }
 }
 
-pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
+pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut RuleCtx) {
     let loc = &ins.loc;
     let plan = crate::runtime_mask::plan(ins, state);
     let errors_before = ctx.sink.errors.len();
@@ -630,8 +628,8 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
             consume(ctx, state, src, loc);
             define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
             if let (Some(dest), Operand::Reg(source)) = (ins.dest.as_deref(), src) {
-                if let Some(fallible) = state.fallible.get(source).copied() {
-                    state.fallible.insert(dest.to_string(), fallible);
+                if let Some(fallible) = state.fallible_get(source) {
+                    state.fallible_insert(dest, fallible);
                 }
             }
         }
@@ -677,7 +675,7 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
             let kind = if scalar_result { RegKind::Scalar } else { RegKind::Value };
             define(ctx, ins, state, RegState::Owned { kind }, loc);
             if let Some(dest) = ins.dest.as_deref() {
-                state.fallible.insert(dest.to_string(), fallible);
+                state.fallible_insert(dest, fallible);
             }
         }
         InstructionKind::CallIndirect { target, args } => {
@@ -711,7 +709,7 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
         InstructionKind::Try { src } => {
             read_operand(ctx, src, state, loc);
             if let Operand::Reg(name) = src {
-                if state.fallible.get(name) == Some(&false) {
+                if state.fallible_get(name) == Some(false) {
                     ctx.report(
                         Trap::FallibleContractMismatch,
                         format!("'?' can only be applied to a fallible value, but '{name}' is not fallible"),
@@ -724,7 +722,7 @@ pub fn transfer(ins: &Instruction, state: &mut FnState, ctx: &mut RuleCtx) {
             }
             define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
             if let Some(dest) = ins.dest.as_deref() {
-                state.fallible.insert(dest.to_string(), false);
+                state.fallible_insert(dest, false);
             }
         }
         _ => {

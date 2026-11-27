@@ -1,10 +1,11 @@
 pub mod capability;
-pub mod report;
 pub mod cfg;
 pub mod mask;
 pub mod merge;
-pub mod rules;
+pub mod regstate;
+pub mod report;
 pub mod runtime_mask;
+pub mod rules;
 pub mod state;
 
 #[cfg(test)]
@@ -14,7 +15,8 @@ use sa_ir::{CapPrefix, Diagnostic, Function, Program, Trap};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
-use state::{FnState, RegKind, RegState};
+use regstate::CapabilityState;
+use state::{FnState, RegKind, RegState, RegStateBackend};
 
 #[derive(Debug, Clone)]
 pub struct VerifyOptions {
@@ -22,6 +24,7 @@ pub struct VerifyOptions {
     pub check_leaks: bool,
     pub check_capabilities: bool,
     pub check_phi: bool,
+    pub use_regstate: bool,
 }
 
 impl Default for VerifyOptions {
@@ -31,6 +34,7 @@ impl Default for VerifyOptions {
             check_leaks: true,
             check_capabilities: true,
             check_phi: true,
+            use_regstate: false,
         }
     }
 }
@@ -90,12 +94,12 @@ fn check_gas(used: u64, function: &Function, opts: &VerifyOptions, sink: &mut Di
     sink.push_error(diagnostic);
 }
 
-fn initial_state(function: &Function) -> FnState {
-    let mut state = FnState::default();
+fn initial_state<S: RegStateBackend>(function: &Function) -> S {
+    let mut state = S::default();
     for param in &function.sig.params {
         state.set(&param.name, RegState::Owned { kind: RegKind::Param });
         if param.cap == CapPrefix::Borrow {
-            state.borrow_params.insert(param.name.clone());
+            state.borrow_params_insert(&param.name);
         }
     }
     for local in &function.locals {
@@ -133,14 +137,14 @@ fn phi_warning(
     }
 }
 
-fn check_function(function: &Function, program: &Program, opts: &VerifyOptions, sink: &mut DiagSink) {
+fn check_function<S: RegStateBackend>(function: &Function, program: &Program, opts: &VerifyOptions, sink: &mut DiagSink) {
     let cfg = cfg::build(function, sink);
     if cfg.successors.is_empty() {
         return;
     }
 
-    let mut in_states: Vec<Option<FnState>> = vec![None; cfg.successors.len()];
-    in_states[0] = Some(initial_state(function));
+    let mut in_states: Vec<Option<S>> = vec![None; cfg.successors.len()];
+    in_states[0] = Some(initial_state::<S>(function));
     let mut worklist = VecDeque::new();
     worklist.push_back(0usize);
     let mut atomics: HashMap<String, sa_ir::AtomicOrdering> = HashMap::new();
@@ -209,7 +213,11 @@ pub fn verify(program: &Program, opts: &VerifyOptions) -> Result<VerifyReport, V
         }
     }
     for function in &program.functions {
-        check_function(function, program, opts, &mut sink);
+        if opts.use_regstate {
+            check_function::<CapabilityState>(function, program, opts, &mut sink);
+        } else {
+            check_function::<FnState>(function, program, opts, &mut sink);
+        }
         report.functions_checked += 1;
         report.instructions_checked += function.all_instructions().len();
     }
@@ -228,7 +236,11 @@ pub fn verify_function(
     let mut sink = DiagSink::default();
     let gas = gas_total(std::iter::once(function));
     check_gas(gas, function, opts, &mut sink);
-    check_function(function, program, opts, &mut sink);
+    if opts.use_regstate {
+        check_function::<CapabilityState>(function, program, opts, &mut sink);
+    } else {
+        check_function::<FnState>(function, program, opts, &mut sink);
+    }
     if !sink.errors.is_empty() {
         return Err(sink.errors);
     }
