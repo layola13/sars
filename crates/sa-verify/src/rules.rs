@@ -688,6 +688,24 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
         InstructionKind::Return { value } => {
             if let Some(operand) = value {
                 read_operand(ctx, operand, state, loc);
+                // sci armReturn: a fallible value may only be returned from a
+                // fallible function; otherwise it must be propagated with `?`.
+                if let Operand::Reg(name) = operand {
+                    if state.fallible_get(name) == Some(true)
+                        && !ctx.signature.return_fallible
+                    {
+                        ctx.report(
+                            Trap::FallibleContractMismatch,
+                            format!(
+                                "fallible value '{name}' must be propagated with ? or returned from a fallible function"
+                            ),
+                            loc,
+                            Some(name),
+                            None,
+                            false,
+                        );
+                    }
+                }
                 let by_value = !matches!(
                     ctx.signature.return_cap,
                     Some(sa_ir::CapPrefix::Borrow) | Some(sa_ir::CapPrefix::Raw)
@@ -708,8 +726,11 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
         }
         InstructionKind::Try { src } => {
             read_operand(ctx, src, state, loc);
+            // sci armTry: `(src & fallible) == 0` is a contract mismatch. A
+            // register is only fallible when a call produced one (Some(true));
+            // unknown/never-set registers are not fallible either.
             if let Operand::Reg(name) = src {
-                if state.fallible_get(name) == Some(false) {
+                if state.fallible_get(name) != Some(true) {
                     ctx.report(
                         Trap::FallibleContractMismatch,
                         format!("'?' can only be applied to a fallible value, but '{name}' is not fallible"),
