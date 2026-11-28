@@ -602,6 +602,18 @@ fn is_owned_pointer_param(ctx: &RuleCtx, name: &str) -> bool {
 }
 
 fn check_leaks<S: RegStateBackend>(ctx: &mut RuleCtx, state: &S, loc: &SourceLoc) {
+    check_leaks_with(ctx, state, loc, Trap::MemoryLeak);
+}
+
+/// Same live-allocation scan as function exit, but with a caller-chosen trap.
+/// sci `armTry` uses `.early_return_leak` when `?`/`early_return` would leave
+/// live allocations behind on the error path.
+fn check_leaks_with<S: RegStateBackend>(
+    ctx: &mut RuleCtx,
+    state: &S,
+    loc: &SourceLoc,
+    trap: Trap,
+) {
     if !ctx.opts.check_leaks {
         return;
     }
@@ -663,12 +675,23 @@ fn check_leaks<S: RegStateBackend>(ctx: &mut RuleCtx, state: &S, loc: &SourceLoc
         .collect();
     leaked.sort();
     for name in leaked {
+        let (message, hint) = if trap == Trap::EarlyReturnLeak {
+            (
+                format!("early return would leak allocation '{name}'"),
+                format!("release '{name}' before the early return"),
+            )
+        } else {
+            (
+                format!("allocation '{name}' is still live at function exit"),
+                format!("add '!{name}' before return"),
+            )
+        };
         ctx.report(
-            Trap::MemoryLeak,
-            format!("allocation '{name}' is still live at function exit"),
+            trap,
+            message,
             loc,
             Some(&name),
-            Some(format!("add '!{name}' before return")),
+            Some(hint),
             false,
         );
     }
@@ -816,6 +839,14 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
                 }
             }
             check_leaks(ctx, state, loc);
+        }
+        InstructionKind::EarlyReturn { value } => {
+            // sci verify_body.zig:511-513 routes early_return through armTry,
+            // which scans for live allocations and reports early_return_leak.
+            if let Some(operand) = value {
+                read_operand(ctx, operand, state, loc);
+            }
+            check_leaks_with(ctx, state, loc, Trap::EarlyReturnLeak);
         }
         InstructionKind::AtomicRmw { addr, value, order, .. } => {
             check_atomic(ctx, addr, *order, loc);
