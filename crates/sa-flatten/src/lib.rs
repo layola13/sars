@@ -22,7 +22,11 @@ pub struct FlattenOptions {
 impl Default for FlattenOptions {
     fn default() -> Self {
         Self {
-            max_depth: 32,
+            // B4: sci emitrange allows depth <= 256 and rejects the 257th
+            // expansion. expand_call is entered at depth 0 for the first
+            // expansion and errors when depth >= max_depth, so 256 permits
+            // exactly 256 nested expansions (depths 0..255).
+            max_depth: 256,
             expand_macros: true,
             check_forbidden: true,
         }
@@ -403,7 +407,7 @@ mod tests {
     #[test]
     fn default_options_match_specification() {
         let opts = FlattenOptions::default();
-        assert_eq!(opts.max_depth, 32);
+        assert_eq!(opts.max_depth, 256);
         assert!(opts.expand_macros);
         assert!(opts.check_forbidden);
     }

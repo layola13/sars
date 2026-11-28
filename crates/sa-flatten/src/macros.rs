@@ -161,8 +161,10 @@ fn expand_call(
     if stack.iter().any(|item| item == name) || depth >= max_depth {
         emit_macro(
             diags,
-            Trap::MacroRecursionLimit,
-            format!("macro '{}' exceeded expansion depth limit", name),
+                Trap::MacroRecursionLimit,
+                // sci trapErrors/messages use one fixed string for both
+                // active-macro cycles and depth-limit overruns.
+                "macro recursion limit exceeded".to_string(),
         );
         return String::new();
     }
@@ -477,7 +479,7 @@ fn expand_defs_text(
                 emit(
                     diags,
                     Trap::MacroRecursionLimit,
-            format!("macro '{}' exceeded expansion depth limit", def.name),
+                    "macro recursion limit exceeded".to_string(),
                     loc,
                     func,
                 );
@@ -758,6 +760,29 @@ mod tests {
         assert!(diags
             .iter()
             .any(|diag| diag.trap == Trap::MacroRecursionLimit));
+    }
+
+    #[test]
+    fn allows_deep_distinct_macro_chains() {
+        // B4: sci permits 256 nested expansions; the old sars default of 32
+        // rejected this chain with MacroRecursionLimit.
+        let mut src = String::new();
+        for i in 0..40 {
+            src.push_str(&format!("[MACRO] M{i}\n"));
+            if i + 1 < 40 {
+                src.push_str(&format!("    EXPAND M{}\n", i + 1));
+            } else {
+                src.push_str("    v = add 1, 2\n");
+            }
+            src.push_str("[END_MACRO]\n");
+        }
+        let defs = macros(&src);
+        let mut diags = Vec::new();
+        expand_text("EXPAND M0\n", &defs, 0, 256, &mut diags);
+        assert!(
+            !diags.iter().any(|d| d.trap == Trap::MacroRecursionLimit),
+            "{diags:?}"
+        );
     }
 
     #[test]
