@@ -5,7 +5,7 @@ use sa_ir::{
     Capability, CapPrefix, Diagnostic, FunctionKind, Instruction, InstructionKind, Operand,
     PrimType, Program, Signature, SourceLoc, Trap,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub struct RuleCtx<'a> {
     pub program: &'a Program,
@@ -646,14 +646,6 @@ fn handle_call<S: RegStateBackend>(
     signature.map(|sig| sig.return_fallible).unwrap_or(false)
 }
 
-fn is_owned_pointer_param(ctx: &RuleCtx, name: &str) -> bool {
-    ctx.signature.params.iter().any(|param| {
-        param.name == name
-            && param.cap == CapPrefix::Move
-            && matches!(param.ty, PrimType::Ptr)
-    })
-}
-
 fn check_leaks<S: RegStateBackend>(ctx: &mut RuleCtx, state: &S, loc: &SourceLoc) {
     check_leaks_with(ctx, state, loc, Trap::MemoryLeak);
 }
@@ -670,59 +662,57 @@ fn check_leaks_with<S: RegStateBackend>(
     if !ctx.opts.check_leaks {
         return;
     }
-    let current = ctx
-        .program
-        .functions
-        .iter()
-        .find(|function| function.name() == ctx.func_name);
-    let indirect_dispatch = current
-        .map(|function| {
-            function
-                .all_instructions()
-                .iter()
-                .any(|instruction| matches!(instruction.kind, InstructionKind::CallIndirect { .. }))
-        })
-        .unwrap_or(false);
-    let call_arg_regs: HashSet<String> = current
-        .map(|function| {
-            function
-                .all_instructions()
-                .iter()
-                .flat_map(|instruction| match &instruction.kind {
-                    InstructionKind::Call { args, .. }
-                    | InstructionKind::CallIndirect { args, .. } => args
-                        .iter()
-                        .filter_map(|arg| match &arg.value {
-                            Operand::Reg(name) => Some(name.clone()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>(),
-                    _ => Vec::new(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     let mut leaked: Vec<String> = state
         .regs_snapshot()
         .iter()
-        .filter(|(name, reg_state)| {
+        .filter(|(name, _reg_state)| {
             if state.escaped_contains(name) {
                 return false;
             }
-            if state.is_owned_alloc(name) {
-                return true;
-            }
-            if matches!(reg_state, RegState::Owned { kind: RegKind::Param })
-                && !state.borrow_params_contains(name)
-                && !call_arg_regs.contains(name)
-                && is_owned_pointer_param(ctx, name)
+            // B9 batch B: sci `checkExitLeaks` mask+flags scan
+            // (DELIVERY/B9_DESIGN.md section 3, items #0-#8). The mask
+            // decides what is live; the batch-A flags side table decides
+            // the exemptions. The old approximations (owned-alloc fast
+            // path, owned-pointer-param special case, indirect-dispatch
+            // special case) are subsumed by #0/#7/#8 and are gone.
+            let mask = state.mask_of(name);
+            if mask == bit::UNINITIALIZED
+                || mask & bit::CONSUMED != 0
+                || mask & bit::UNTRACKED != 0
             {
-                return true;
+                return false; // #0 uninitialized / consumed / untracked
             }
-            indirect_dispatch
-                && call_arg_regs.contains(name)
-                && state.borrow_params_contains(name)
-                && !matches!(reg_state, RegState::Moved | RegState::Released)
+            let flags = state.flag_get(name);
+            if flags & reg_flag::CONST_DATA != 0 {
+                return false; // #1 const data
+            }
+            if flags & reg_flag::EPHEMERAL != 0 {
+                return false; // #2 ephemeral scalar temp
+            }
+            if flags & reg_flag::RAW_PTR != 0 {
+                return false; // #3 raw pointer, no ownership
+            }
+            if mask & bit::BORROW_VIEW != 0 {
+                // #4/#6 via origin: a borrow view of const data or of a
+                // stack allocation owns nothing. A view of an owned
+                // origin stays live (sci's move-while-borrowed backstop).
+                if let Some(origin) = state.borrow_origin_get(name) {
+                    let oflags = state.flag_get(&origin);
+                    if oflags & reg_flag::CONST_DATA != 0 || oflags & reg_flag::STACK != 0 {
+                        return false;
+                    }
+                }
+            }
+            if flags & reg_flag::BRANCH_COND != 0 {
+                return false; // #5 branch condition temp
+            }
+            if flags & reg_flag::STACK != 0 {
+                return false; // #6 stack allocation
+            }
+            if state.is_consumed_in_function(name) {
+                return false; // #7 consumed inside the function
+            }
+            mask & bit::ACTIVE != 0 // #8 owned-active remainder leaks
         })
         .map(|(name, _)| name.clone())
         .collect();
@@ -1159,6 +1149,14 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
                     }
                 }
             }
+            // B9 batch B: the return operand joins consumed_in_function
+            // before the exit scan (sci collects it syntactically over
+            // the whole body; batch A's post-transfer write in
+            // apply_reg_flags lands after this scan). Without this, a
+            // returned allocation/view is reported as a leak.
+            if let Some(Operand::Reg(name)) = value {
+                state.consumed_mark(name);
+            }
             check_leaks(ctx, state, loc);
         }
         InstructionKind::EarlyReturn { value } => {
@@ -1166,6 +1164,12 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
             // which scans for live allocations and reports early_return_leak.
             if let Some(operand) = value {
                 read_operand(ctx, operand, state, loc);
+                // B9 batch B: same consumed-before-scan timing as the
+                // Return arm above (apply_reg_flags records
+                // Return|EarlyReturn operands as consumed).
+                if let Operand::Reg(name) = operand {
+                    state.consumed_mark(name);
+                }
             }
             check_leaks_with(ctx, state, loc, Trap::EarlyReturnLeak);
         }

@@ -7,6 +7,8 @@ use std::process::{Command, Output};
 const SMOKE_SOURCE: &str = "@export smoke_add(a: i32, b: i32) -> i32:\n\
 L_ENTRY:\n\
     s = add a, b\n\
+    !a\n\
+    !b\n\
     return s\n";
 
 fn smoke_program() -> Program {

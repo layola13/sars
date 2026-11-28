@@ -494,7 +494,17 @@ fn allocation_stored_into_memory_is_not_a_leak() {
 
 #[test]
 fn allocation_passed_to_call_is_not_a_leak() {
-    let mut sink = function("sink", vec![block("L_entry", vec![ins(InstructionKind::Return { value: None }, 2)], 1)]);
+    let mut sink = function(
+        "sink",
+        vec![block(
+            "L_entry",
+            vec![
+                ins(InstructionKind::Release { reg: "p".into() }, 2),
+                ins(InstructionKind::Return { value: None }, 3),
+            ],
+            1,
+        )],
+    );
     sink.sig.params.push(sa_ir::ParamSpec::new("p", PrimType::Ptr, CapPrefix::Borrow));
     let source = function(
         "main",
@@ -573,7 +583,11 @@ fn live_borrow_param_in_indirect_dispatch_is_a_leak() {
 }
 
 #[test]
-fn live_borrow_param_without_indirect_dispatch_is_not_a_leak() {
+fn live_borrow_param_is_an_exit_leak() {
+    // B9 batch B / sci semantics: a borrow param is a live view at exit
+    // and must be released (`!slot`); sci reports E1012 for the
+    // unreleased shape. The old test's exemption was sars's
+    // indirect-dispatch approximation, removed with the mask+flags scan.
     let mut source = function(
         "reads",
         vec![block("L_entry", vec![ins(InstructionKind::Return { value: None }, 2)], 1)],
@@ -582,7 +596,9 @@ fn live_borrow_param_without_indirect_dispatch_is_not_a_leak() {
         .sig
         .params
         .push(ParamSpec::new("slot", PrimType::Ptr, CapPrefix::Borrow));
-    verify(&program(vec![source]), &VerifyOptions::default()).expect("borrow param is not owned");
+    let errors = verify(&program(vec![source]), &VerifyOptions::default()).unwrap_err();
+    assert!(has_trap(&errors, Trap::MemoryLeak), "{errors:?}");
+    assert!(errors.iter().any(|diagnostic| diagnostic.register.as_deref() == Some("slot")));
 }
 
 #[test]
@@ -642,7 +658,10 @@ fn moved_owned_ptr_param_is_not_an_exit_leak() {
 }
 
 #[test]
-fn live_scalar_param_is_not_an_exit_leak() {
+fn live_scalar_param_is_an_exit_leak() {
+    // B9 batch B / sci semantics: a scalar param is Active at exit
+    // (sci mask 1) and must be released; the ephemeral exemption covers
+    // in-body temps, not parameters. sci reports E1012 here.
     let mut source = function(
         "consume",
         vec![block("L_entry", vec![ins(InstructionKind::Return { value: None }, 2)], 1)],
@@ -651,7 +670,9 @@ fn live_scalar_param_is_not_an_exit_leak() {
         .sig
         .params
         .push(ParamSpec::new("n", PrimType::I32, CapPrefix::ByValue));
-    verify(&program(vec![source]), &VerifyOptions::default()).expect("scalars cannot leak");
+    let errors = verify(&program(vec![source]), &VerifyOptions::default()).unwrap_err();
+    assert!(has_trap(&errors, Trap::MemoryLeak), "{errors:?}");
+    assert!(errors.iter().any(|diagnostic| diagnostic.register.as_deref() == Some("n")));
 }
 
 #[test]
@@ -706,7 +727,8 @@ fn borrow_arg_to_by_value_ptr_param_is_accepted() {
                     },
                     2,
                 ),
-                ins(InstructionKind::Return { value: None }, 3),
+                ins(InstructionKind::Release { reg: "MSG".into() }, 3),
+                ins(InstructionKind::Return { value: None }, 4),
             ],
             1,
         )],
