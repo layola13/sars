@@ -1,8 +1,8 @@
 use crate::state::{RegKind, RegState, RegStateBackend};
 use crate::{DiagSink, VerifyOptions};
 use sa_ir::{
-    Capability, CapPrefix, Diagnostic, Instruction, InstructionKind, Operand, PrimType, Program,
-    Signature, SourceLoc, Trap,
+    Capability, CapPrefix, Diagnostic, FunctionKind, Instruction, InstructionKind, Operand,
+    PrimType, Program, Signature, SourceLoc, Trap,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -678,6 +678,25 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
     let loc = &ins.loc;
     let plan = crate::runtime_mask::plan(ins, state);
     let errors_before = ctx.sink.errors.len();
+    // B2 / sci armRawCast+armAssumeSafe+armAssumeBorrow: the FFI airlock.
+    // These unsafe escapes are only legal inside an @ffi_wrapper function.
+    let unsafe_escape = matches!(
+        ins.kind,
+        InstructionKind::RawCast { .. }
+            | InstructionKind::AssumeSafe { .. }
+            | InstructionKind::AssumeBorrow { .. }
+    );
+    if unsafe_escape && ctx.signature.kind != FunctionKind::FfiWrapper {
+        ctx.report(
+            Trap::IllegalUnsafeContext,
+            "raw pointer and assume_* instructions are only legal inside @ffi_wrapper",
+            loc,
+            None,
+            None,
+            false,
+        );
+        return;
+    }
     match &ins.kind {
         InstructionKind::Alloc { .. } | InstructionKind::StackAlloc { .. } => {
             for operand in ins.reads() {
