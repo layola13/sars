@@ -57,9 +57,13 @@
 ## 环境限制与剔除项（非 sars 缺陷，不计入候选）
 
 - **wasm 发射面不可比**：sci `build-wasm` 需 `zig cc` 链接 wasm32-wasi，本机无该链接器 → `error[ExternalCompiler]: failed to launch zig cc ... FileNotFound`。sars `build-wasm` 正常。此项本机无法做双边行为对比，非 sars 缺陷。
-- **sci check 超时 6 例**（`30_manual_guard_branch`、`32_trait_object_vector`、`334_indirect_import_shadow`、`335_ts_slice_inverted_bounds`、`35_iterator_fold`、`36_...`）：本机并发负载下 sci 进程 25s 超时（TimeoutExpired），属噪声，已从 rc 分叉中剔除。
+- **sci check 超时 5 例**（`30_manual_guard_branch`、`32_trait_object_vector`、`334_indirect_import_shadow`、`335_ts_slice_inverted_bounds`、`35_iterator_fold`）：本机并发负载下 sci 进程 25s 超时（TimeoutExpired，见 `b7_check_results.jsonl` 的 5 条），属噪声，已从 rc 分叉中剔除。原稿误记为「6 例 / 含 `36_...`」，经核验实为 5 例（依 #19921② 更正）。
 - **sci run 前置差异**：`02_mutability`（sci `InvalidAddress`）、`136_executor_task_queue`（sci MemoryLeak）等 `sci run rc=1 / sars rc=0` 例，其 js/c 后端双边一致，是 sci run 需要项目 ledger/更严消费策略的前置差异，不计为 sars 独立缺陷（136 的 check 面 MemoryLeak 已在 B7-3 计入）。
 - **js/c build-fail 例**（`114_callback_from_c`、`245_contract_generic_monomorph_share`）：sci build-js/build-c 失败源于其 check/import 前置，非发射器行为差。
+
+## 低优先跟进登记（#19921② 补记）
+
+- **965_npm_handle_ctor_method c-face 分叉【低】**：`b7_emit_results.jsonl` 实测 `js_sars=js_sci=[0,"965\n"]`（JS 面一致），但 C 面 `c_sars=[0,"965\n"]` / `c_sci_build=0` / `c_sci=[1,""]`——sci C 发射编译成功但运行 rc=1 空输出，sars C 运行 rc=0 正常输出。check 面双边 rc=0、run 面双边 rc=1 空，故分叉仅在 C 发射执行阶段。按 #19921② 定低优先跟进，不并入 B10、本批不动。原稿未登记，此处补齐。
 
 ## 纪律声明
 

@@ -43,16 +43,39 @@ pub struct Interpreter<'a> {
     gas: u64,
     depth: usize,
     const_ptrs: HashMap<String, u64>,
+    // vtable slot payload (the 8 bytes loaded from a slot) -> target function
+    // name. sci carries this as RegValue provenance; the sars Value model has
+    // no provenance field, so we recover it from the vtable constant layout.
+    indirect_targets: HashMap<u64, String>,
 }
 
 impl<'a> Interpreter<'a> {
     pub fn new(program: &'a Program, opts: InterpOptions) -> Self {
         let mut memory = Memory::new(1024 * 1024);
         let mut const_ptrs = HashMap::new();
+        let mut indirect_targets = HashMap::new();
         for constant in &program.consts {
             let data = const_data(&constant.value);
             if data.is_empty() {
                 continue;
+            }
+            // Each vtable entry is encoded as "slot:@target_fn" bytes laid out
+            // contiguously. A `load t + N*8 as ptr` reads the first 8 bytes of
+            // the Nth entry; map that exact u64 to the target so call_indirect
+            // can resolve it the way sci does via vtable_slot_name provenance.
+            if let ConstValue::VTable(entries) = &constant.value {
+                let mut offset = 0usize;
+                for entry in entries {
+                    if let Some(target) = entry.vtable_target() {
+                        let end = (offset + 8).min(data.len());
+                        if end > offset {
+                            let mut raw = [0u8; 8];
+                            raw[..end - offset].copy_from_slice(&data[offset..end]);
+                            indirect_targets.insert(u64::from_le_bytes(raw), normalize(target).to_string());
+                        }
+                    }
+                    offset += const_data(entry).len();
+                }
             }
             if let Ok(ptr) = memory.alloc(data.len(), 8) {
                 if memory.write(ptr, &data).is_ok() {
@@ -70,6 +93,7 @@ impl<'a> Interpreter<'a> {
             gas: 0,
             depth: 0,
             const_ptrs,
+            indirect_targets,
         }
     }
 
@@ -279,14 +303,28 @@ impl<'a> Interpreter<'a> {
                         Operand::Symbol(name) => self.call(name, vals)?,
                         _ => {
                             let target_value = self.resolve(frame, target)?;
-                            let index = target_value.as_u64().unwrap_or(0) as usize;
-                            match self.program.functions.get(index) {
-                                Some(func) => self.call_function(func, vals)?,
-                                None => {
-                                    return Err(RuntimeError::new(
-                                        Trap::RuntimeError,
-                                        format!("invalid indirect call target {index}"),
-                                    ));
+                            // A vtable slot holds the UTF-8 bytes "slot:@fn"
+                            // rather than a function index. When the loaded
+                            // value matches a known vtable slot, resolve the
+                            // target by name (sci does this via provenance);
+                            // otherwise fall back to the legacy numeric
+                            // index so existing indirect-call inputs keep working.
+                            if let Some(name) = target_value
+                                .as_u64()
+                                .and_then(|raw| self.indirect_targets.get(&raw))
+                                .cloned()
+                            {
+                                self.call(&name, vals)?
+                            } else {
+                                let index = target_value.as_u64().unwrap_or(0) as usize;
+                                match self.program.functions.get(index) {
+                                    Some(func) => self.call_function(func, vals)?,
+                                    None => {
+                                        return Err(RuntimeError::new(
+                                            Trap::RuntimeError,
+                                            format!("invalid indirect call target {index}"),
+                                        ));
+                                    }
                                 }
                             }
                         }

@@ -278,10 +278,16 @@ pub(crate) fn apply_op(
                     Ok(Value::Int(raw as i128))
                 }
             }
+            // sci bitcastValue is bit-preserving: only the type tag changes,
+            // the 64-bit payload is reinterpreted under the target type. The
+            // generic `x` above is a zero-extended i128 (Ptr(u64) -> u64::MAX
+            // as i128), so a Ptr->Int roundtrip of -1 used to become a large
+            // positive integer. Reinterpret under the target width/signedness
+            // to keep i64<->ptr roundtrips bit-exact.
             _ => match ty {
                 Some(t) if t.is_float() => Ok(Value::Float(f64::from_bits(x as u64))),
                 Some(PrimType::Ptr) => Ok(Value::Ptr(x as u64)),
-                _ => Ok(Value::Int(x)),
+                _ => Ok(Value::Int(mask(x, ty))),
             },
         },
         OpKind::AddV128 | OpKind::SubV128 | OpKind::MulV128 => Ok(vector(op, &a, &b)),
