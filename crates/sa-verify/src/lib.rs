@@ -194,7 +194,7 @@ fn check_function<S: RegStateBackend>(function: &Function, program: &Program, op
     }
 }
 
-/// E1 batch 1: run the static-bounds pre-pass exactly once per function.
+/// E1: run the interior-pointer pre-passes exactly once per function.
 fn run_static_bounds(function: &Function, program: &Program, opts: &VerifyOptions, sink: &mut DiagSink) {
     let mut context = rules::RuleCtx {
         program,
@@ -205,6 +205,7 @@ fn run_static_bounds(function: &Function, program: &Program, opts: &VerifyOption
         atomics: &mut HashMap::new(),
     };
     bounds::check_static_bounds::<FnState>(function, &mut context);
+    bounds::check_overlapping_borrows::<FnState>(function, &mut context);
 }
 
 pub fn verify(program: &Program, opts: &VerifyOptions) -> Result<VerifyReport, Vec<Diagnostic>> {

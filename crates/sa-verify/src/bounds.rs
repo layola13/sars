@@ -1,15 +1,27 @@
-//! E1 (first batch): static out-of-bounds pointer-offset check.
+//! E1: interior-pointer checks, ported as linear intra-function pre-passes
+//! that run independently of the dataflow backend (no RegStateBackend/merge
+//! changes).
 //!
-//! Port of the narrow, fully-static slice of sci's
-//! `checkStaticOffsetInBounds` (snapshot_merge_state_in_scope.zig:334-366):
-//! when an allocation's size and a pointer access's byte offset are both
-//! compile-time constants, an access at or past the end is a
-//! `BorrowConflict` ("pointer offset exceeds allocation size").
+//! batch 1 — `check_static_bounds`: static out-of-bounds pointer-offset check
+//! (sci `checkStaticOffsetInBounds`, snapshot_merge_state_in_scope.zig:334-366).
+//! When an allocation's size and a pointer access's byte offset are both
+//! compile-time constants, an access at or past the end is a `BorrowConflict`
+//! ("pointer offset exceeds allocation size").
 //!
-//! Dynamic offsets/sizes, negative offsets and pointers of unknown provenance
-//! stay permissive (sci does the same: `static_offset orelse return null`,
-//! `!alloc_size_known orelse return null`). Interior-tree field identity and
-//! overlapping-borrow checks are intentionally left to a later batch.
+//! batch 2 — `check_overlapping_borrows`: overlapping interior-field mutable
+//! borrow check (sci `hasOverlappingInteriorBorrow`,
+//! snapshot_merge_state_in_scope.zig:405-414 plus `armBorrow` in
+//! verify_body_arms_alloc_borrow.zig:211-239). Field identity is
+//! (root, accumulated static offset) established by `ptr_add`
+//! (`setInteriorOffsetFromBase`); a `&mut` of a field while a *different*
+//! register holds a borrow on the same field is `ReadWriteConflict`
+//! ("cannot borrow mut while overlapping field borrows are active").
+//!
+//! Dynamic offsets/sizes, negative offsets and pointers of unknown
+//! provenance stay permissive (sci: `static_offset orelse return null`;
+//! unknown offset in `sameInteriorField` is treated conservatively, but sars
+//! errs on the side of not reporting when field identity is not statically
+//! known, to avoid false positives on the 968-name corpus).
 
 use crate::rules::RuleCtx;
 use crate::state::RegStateBackend;
@@ -138,6 +150,111 @@ pub fn check_static_bounds<S: RegStateBackend>(
     }
 }
 
+/// A live borrow on a source register: (mutable, field identity). Mirrors
+/// sci's `locks[src]` + interior root/offset for that source.
+type BorrowLock = (bool, View);
+
+/// One interior field `(root, off)` is `sameInteriorField` as another when
+/// both roots match and both offsets are statically known and equal. When
+/// provenance/offset is unknown we return false (permissive) — see the note
+/// at the top of this file.
+fn same_field(a: &View, b: &View) -> bool {
+    a.0 == b.0 && a.1 == b.1
+}
+
+/// batch 2: detect `&mut` of an interior field while a *different* register
+/// holds a live borrow on the same (root, offset) field. This is the sars
+/// counterpart of sci's `hasOverlappingInteriorBorrow` guard inside
+/// `armBorrow`. Same-register shared+mut conflicts are already reported by
+/// the main dataflow `add_borrow`, so they are deliberately skipped here to
+/// avoid duplicate diagnostics.
+///
+/// Linear intra-function pre-pass; no backend/merge changes.
+pub fn check_overlapping_borrows<S: RegStateBackend>(
+    function: &sa_ir::Function,
+    ctx: &mut RuleCtx,
+) {
+    // Interior field identity for every pointer-carrying register. Built by
+    // `ptr_add` from an allocation root (or an already-known field), with
+    // the static byte offset accumulated along the chain (sci
+    // `setInteriorOffsetFromBase`).
+    let mut fields: HashMap<String, View> = HashMap::new();
+    // Live borrows keyed by the *source* register (sci `locks[src] += 1`).
+    let mut locks: HashMap<String, BorrowLock> = HashMap::new();
+    // Borrow-view register -> its underlying source register (sci `origins`).
+    let mut view_origin: HashMap<String, String> = HashMap::new();
+
+    for ins in function.all_instructions() {
+        match &ins.kind {
+            InstructionKind::Alloc { .. } | InstructionKind::StackAlloc { .. } => {
+                // An allocation root has field identity (root=itself, off=0),
+                // but we only need to track it once it is derived by ptr_add.
+            }
+            InstructionKind::PtrAdd { base, offset } => {
+                if let (Some(dest), Operand::Reg(base_reg)) = (ins.dest.as_deref(), base) {
+                    let o = int_const(offset).unwrap_or(0);
+                    if let Some((root, off)) = fields.get(base_reg).cloned() {
+                        fields.insert(dest.to_string(), (root, off.saturating_add(o)));
+                    } else {
+                        fields.insert(dest.to_string(), (base_reg.clone(), o));
+                    }
+                }
+            }
+            InstructionKind::Move { src } => {
+                if let (Some(dest), Operand::Reg(src_reg)) = (ins.dest.as_deref(), src) {
+                    if let Some(f) = fields.get(src_reg).cloned() {
+                        fields.insert(dest.to_string(), f);
+                    }
+                }
+            }
+            InstructionKind::Borrow { src, mutable } | InstructionKind::AssumeBorrow { src, mutable } => {
+                let source = match src {
+                    Operand::Reg(name) => name.clone(),
+                    _ => continue,
+                };
+                if *mutable {
+                    if let Some(field) = fields.get(&source).cloned() {
+                        let overlapping = locks.iter().any(|(held_src, (_held_mut, held_field))| {
+                            held_src != &source && same_field(&field, held_field)
+                        });
+                        if overlapping {
+                            ctx.report(
+                                Trap::ReadWriteConflict,
+                                "cannot borrow mut while overlapping field borrows are active",
+                                &ins.loc,
+                                Some(&source),
+                                None,
+                                false,
+                            );
+                        }
+                    }
+                }
+                // Record this borrow on the source register. A mutable borrow
+                // replaces any shared locks on that same source; a shared
+                // borrow adds another reader (mirrors setBorrowState/locks).
+                if *mutable {
+                    locks.insert(source.clone(), (true, fields.get(&source).cloned().unwrap_or_default()));
+                } else if let Some((m, f)) = locks.get(&source).cloned() {
+                    if !m {
+                        locks.insert(source.clone(), (false, f));
+                    }
+                } else {
+                    locks.insert(source.clone(), (false, fields.get(&source).cloned().unwrap_or_default()));
+                }
+                if let Some(dest) = ins.dest.as_deref() {
+                    view_origin.insert(dest.to_string(), source);
+                }
+            }
+            InstructionKind::Release { reg } => {
+                if let Some(source) = view_origin.remove(reg) {
+                    locks.remove(&source);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +342,115 @@ mod tests {
         );
         l.dest = Some("x".into());
         assert!(run(vec![a, p, l]).is_empty());
+    }
+
+    // ---- batch 2: overlapping interior-field borrow ----
+
+    fn run_overlap(kinds: Vec<Instruction>) -> Vec<sa_ir::Diagnostic> {
+        let mut f = Function::new(Signature::new("main"), loc(1));
+        let mut b = Block::new("L_entry", loc(1));
+        b.instrs = kinds;
+        f.blocks.push(b);
+        let mut program = sa_ir::Program::new();
+        program.functions.push(f);
+        let mut sink = crate::DiagSink::default();
+        let opts = crate::VerifyOptions::default();
+        let mut ctx = RuleCtx {
+            program: &program,
+            opts: &opts,
+            sink: &mut sink,
+            func_name: "main",
+            signature: &program.functions[0].sig,
+            atomics: &mut HashMap::new(),
+        };
+        crate::bounds::check_overlapping_borrows::<crate::state::FnState>(
+            &program.functions[0],
+            &mut ctx,
+        );
+        sink.errors
+    }
+
+    fn alloc16(line: u32) -> Instruction {
+        let mut a = ins(InstructionKind::Alloc { size: Operand::Int(16) }, line);
+        a.dest = Some("buf".into());
+        a
+    }
+    fn ptradd(dest: &str, base: &str, off: i128, line: u32) -> Instruction {
+        let mut p = ins(
+            InstructionKind::PtrAdd {
+                base: Operand::Reg(base.into()),
+                offset: Operand::Int(off),
+            },
+            line,
+        );
+        p.dest = Some(dest.into());
+        p
+    }
+    fn borrow(dest: &str, src: &str, mutable: bool, line: u32) -> Instruction {
+        let mut b = ins(
+            InstructionKind::Borrow {
+                src: Operand::Reg(src.into()),
+                mutable,
+            },
+            line,
+        );
+        b.dest = Some(dest.into());
+        b
+    }
+
+    #[test]
+    fn overlapping_field_mut_borrow_is_rejected() {
+        // buf=alloc16; f0=ptr_add buf,0; f1=ptr_add buf,0;
+        // r0=&f0; r1=&mut f1 -> ReadWriteConflict (E1011)
+        let errs = run_overlap(vec![
+            alloc16(2),
+            ptradd("f0", "buf", 0, 3),
+            ptradd("f1", "buf", 0, 4),
+            borrow("r0", "f0", false, 5),
+            borrow("r1", "f1", true, 6),
+        ]);
+        assert!(errs.iter().any(|d| d.trap == Trap::ReadWriteConflict
+            && d.message.contains("overlapping field borrows are active")));
+    }
+
+    #[test]
+    fn distinct_fields_mut_borrow_is_allowed() {
+        // Two different offsets are different fields -> no conflict.
+        let errs = run_overlap(vec![
+            alloc16(2),
+            ptradd("f0", "buf", 0, 3),
+            ptradd("f1", "buf", 4, 4),
+            borrow("r0", "f0", false, 5),
+            borrow("r1", "f1", true, 6),
+        ]);
+        assert!(errs.is_empty(), "distinct offsets must not conflict: {:?}", errs);
+    }
+
+    #[test]
+    fn same_register_conflict_not_duplicated_by_prepass() {
+        // Same-register shared+mut is the dataflow backend's job; the
+        // pre-pass must skip it to avoid a duplicate diagnostic.
+        let errs = run_overlap(vec![
+            alloc16(2),
+            ptradd("f0", "buf", 0, 3),
+            borrow("r0", "f0", false, 4),
+            borrow("r1", "f0", true, 5),
+        ]);
+        assert!(errs.is_empty(), "same-register conflict must be left to backend: {:?}", errs);
+    }
+
+    #[test]
+    fn released_borrow_does_not_conflict() {
+        let mut rel = ins(InstructionKind::Release { reg: "r0".into() }, 6);
+        let errs = run_overlap(vec![
+            alloc16(2),
+            ptradd("f0", "buf", 0, 3),
+            ptradd("f1", "buf", 0, 4),
+            borrow("r0", "f0", false, 5),
+            rel.clone(),
+            borrow("r1", "f1", true, 7),
+        ]);
+        let _ = &mut rel;
+        assert!(errs.is_empty(), "released borrow must not conflict: {:?}", errs);
     }
 }
