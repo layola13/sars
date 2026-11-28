@@ -22,6 +22,11 @@
 //! unknown offset in `sameInteriorField` is treated conservatively, but sars
 //! errs on the side of not reporting when field identity is not statically
 //! known, to avoid false positives on the 968-name corpus).
+//!
+//! E4 (store write check) — `check_shared_borrow_writes`: a `store` through a
+//! borrow view whose origin has more than one live shared borrow is a
+//! `ReadWriteConflict` ("cannot write through a shared borrow"), mirroring
+//! sci's `writeCheck` (collect_metadata.zig:477-514) invoked from `armStore`.
 
 use crate::rules::RuleCtx;
 use crate::state::RegStateBackend;
@@ -255,6 +260,70 @@ pub fn check_overlapping_borrows<S: RegStateBackend>(
     }
 }
 
+/// E4: reject a `store` through a borrow view whose origin has more than one
+/// live shared borrow (sci `writeCheck`, collect_metadata.zig:500-509). A
+/// single shared borrow still grants a "materialize" write that upgrades the
+/// origin to locked_mut (sci armStore:92-98); two or more readers make that
+/// write a `ReadWriteConflict` ("cannot write through a shared borrow").
+///
+/// Linear intra-function pre-pass; no backend/merge changes.
+pub fn check_shared_borrow_writes<S: RegStateBackend>(
+    function: &sa_ir::Function,
+    ctx: &mut RuleCtx,
+) {
+    let mut view_origin: HashMap<String, String> = HashMap::new();
+    // Number of live *shared* borrows on each origin register.
+    let mut shared_count: HashMap<String, usize> = HashMap::new();
+    // Origins currently under an exclusive (&mut) borrow.
+    let mut mut_origins: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for ins in function.all_instructions() {
+        match &ins.kind {
+            InstructionKind::Borrow { src, mutable } | InstructionKind::AssumeBorrow { src, mutable } => {
+                let source = match src {
+                    Operand::Reg(name) => name.clone(),
+                    _ => continue,
+                };
+                if *mutable {
+                    mut_origins.insert(source.clone());
+                } else {
+                    *shared_count.entry(source.clone()).or_insert(0) += 1;
+                }
+                if let Some(dest) = ins.dest.as_deref() {
+                    view_origin.insert(dest.to_string(), source);
+                }
+            }
+            InstructionKind::Release { reg } => {
+                if let Some(source) = view_origin.remove(reg) {
+                    if mut_origins.remove(&source) {
+                        // exclusive borrow released
+                    } else if let Some(c) = shared_count.get_mut(&source) {
+                        *c = c.saturating_sub(1);
+                    }
+                }
+            }
+            InstructionKind::Store { addr, .. } => {
+                if let Operand::Reg(base) = &addr.base {
+                    if let Some(origin) = view_origin.get(base) {
+                        let readers = shared_count.get(origin).copied().unwrap_or(0);
+                        if readers > 1 {
+                            ctx.report(
+                                Trap::ReadWriteConflict,
+                                "cannot write through a shared borrow",
+                                &ins.loc,
+                                Some(base),
+                                None,
+                                false,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +521,77 @@ mod tests {
         ]);
         let _ = &mut rel;
         assert!(errs.is_empty(), "released borrow must not conflict: {:?}", errs);
+    }
+
+    // ---- E4: write through shared borrow ----
+
+    fn run_store(kinds: Vec<Instruction>) -> Vec<sa_ir::Diagnostic> {
+        let mut f = Function::new(Signature::new("main"), loc(1));
+        let mut b = Block::new("L_entry", loc(1));
+        b.instrs = kinds;
+        f.blocks.push(b);
+        let mut program = sa_ir::Program::new();
+        program.functions.push(f);
+        let mut sink = crate::DiagSink::default();
+        let opts = crate::VerifyOptions::default();
+        let mut ctx = RuleCtx {
+            program: &program,
+            opts: &opts,
+            sink: &mut sink,
+            func_name: "main",
+            signature: &program.functions[0].sig,
+            atomics: &mut HashMap::new(),
+        };
+        crate::bounds::check_shared_borrow_writes::<crate::state::FnState>(
+            &program.functions[0],
+            &mut ctx,
+        );
+        sink.errors
+    }
+
+    fn store_view(base: &str, line: u32) -> Instruction {
+        ins(
+            InstructionKind::Store {
+                addr: sa_ir::Address::new(Operand::Reg(base.into()), 0),
+                value: Operand::Int(9),
+            },
+            line,
+        )
+    }
+
+    #[test]
+    fn write_through_two_shared_borrows_is_rejected() {
+        let errs = run_store(vec![
+            alloc16(2),
+            borrow("v0", "buf", false, 3),
+            borrow("v1", "buf", false, 4),
+            store_view("v0", 5),
+        ]);
+        assert!(errs.iter().any(|d| d.trap == Trap::ReadWriteConflict
+            && d.message.contains("cannot write through a shared borrow")));
+    }
+
+    #[test]
+    fn write_through_single_shared_borrow_is_allowed() {
+        // sci upgrades a lone reader to locked_mut on the store (armStore:92-98).
+        let errs = run_store(vec![
+            alloc16(2),
+            borrow("v0", "buf", false, 3),
+            store_view("v0", 4),
+        ]);
+        assert!(errs.is_empty(), "single shared borrow may materialize a write: {:?}", errs);
+    }
+
+    #[test]
+    fn write_after_one_shared_released_is_allowed() {
+        let rel = ins(InstructionKind::Release { reg: "v1".into() }, 5);
+        let errs = run_store(vec![
+            alloc16(2),
+            borrow("v0", "buf", false, 3),
+            borrow("v1", "buf", false, 4),
+            rel,
+            store_view("v0", 6),
+        ]);
+        assert!(errs.is_empty(), "released reader must allow write: {:?}", errs);
     }
 }

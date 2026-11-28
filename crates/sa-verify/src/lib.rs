@@ -206,6 +206,7 @@ fn run_static_bounds(function: &Function, program: &Program, opts: &VerifyOption
     };
     bounds::check_static_bounds::<FnState>(function, &mut context);
     bounds::check_overlapping_borrows::<FnState>(function, &mut context);
+    bounds::check_shared_borrow_writes::<FnState>(function, &mut context);
 }
 
 pub fn verify(program: &Program, opts: &VerifyOptions) -> Result<VerifyReport, Vec<Diagnostic>> {
