@@ -283,7 +283,7 @@ fn gas_limit_is_enforced() {
 }
 
 #[test]
-fn phi_conflict_is_a_warning() {
+fn consumed_parameter_on_one_path_is_a_phi_error() {
     let mut source = function(
         "main",
         vec![
@@ -326,8 +326,56 @@ fn phi_conflict_is_a_warning() {
     );
     source.locals.push("c".into());
     source.sig.params.push(ParamSpec::new("p", PrimType::I64, CapPrefix::ByValue));
-    let report = verify(&program(vec![source]), &VerifyOptions::default()).expect("warning only");
-    assert!(report.warnings.iter().any(|diagnostic| diagnostic.trap == Trap::PhiStateConflict));
+    let errors = verify(&program(vec![source]), &VerifyOptions::default())
+        .expect_err("consumed-vs-live parameter join must be an error");
+    assert!(has_trap(&errors, Trap::PhiStateConflict), "{errors:?}");
+}
+
+#[test]
+fn consumed_on_one_path_is_a_phi_error() {
+    let mut source = function(
+        "main",
+        vec![
+            block(
+                "L_entry",
+                vec![ins(
+                    InstructionKind::Br {
+                        cond: Operand::reg("c"),
+                        then_label: "L_left".into(),
+                        else_label: "L_right".into(),
+                    },
+                    2,
+                )],
+                1,
+            ),
+            block(
+                "L_left",
+                vec![
+                    ins(InstructionKind::Alloc { size: Operand::Int(8) }, 4).with_dest("a"),
+                    ins(InstructionKind::Release { reg: "a".into() }, 5),
+                    ins(InstructionKind::Jmp { target: "L_join".into() }, 6),
+                ],
+                3,
+            ),
+            block(
+                "L_right",
+                vec![
+                    ins(InstructionKind::Alloc { size: Operand::Int(8) }, 8).with_dest("a"),
+                    ins(InstructionKind::Jmp { target: "L_join".into() }, 9),
+                ],
+                7,
+            ),
+            block(
+                "L_join",
+                vec![ins(InstructionKind::Return { value: None }, 11)],
+                10,
+            ),
+        ],
+    );
+    source.locals.push("c".into());
+    let errors = verify(&program(vec![source]), &VerifyOptions::default())
+        .expect_err("consumed-vs-live join must be an error");
+    assert!(has_trap(&errors, Trap::PhiStateConflict), "{errors:?}");
 }
 
 #[test]

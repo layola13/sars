@@ -12,7 +12,7 @@ pub mod state;
 #[cfg(test)]
 mod tests;
 
-use sa_ir::{CapPrefix, Diagnostic, Function, Program, Trap};
+use sa_ir::{CapPrefix, Diagnostic, Function, Program, SourceLoc, Trap};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
@@ -113,28 +113,51 @@ fn initial_state<S: RegStateBackend>(function: &Function) -> S {
 
 fn phi_warning(
     function: &Function,
-    block_index: usize,
     conflicts: Vec<(String, RegState, RegState)>,
     sink: &mut DiagSink,
     opts: &VerifyOptions,
+    loc: SourceLoc,
 ) {
     if !opts.check_phi {
         return;
     }
-    let block = &function.blocks[block_index];
+    // A2: sci reports a PhiStateConflict trap at the incoming branch when
+    // snapshots disagree; a warning that never affects the exit code is not
+    // parity. Callers pass the current block's terminator position (sci
+    // reports the jmp/br line, not the target label).
     for (name, left, right) in conflicts {
+        // Restrict the hard error to the exact shape sci rejects in the
+        // source-level fail-before: one path consumed/released a live value
+        // while another path reaches the join with that value still owned.
+        // Other coarse-model conflicts (e.g. a rebound parameter becoming a
+        // scalar on a loop back-edge, rosetta 314) stay warnings until a
+        // clean fail-before pins down sci's PATCH join semantics.
+        let consumed_vs_live = matches!(
+            (&left, &right),
+            (RegState::Moved | RegState::Released, RegState::Owned { .. })
+                | (RegState::Owned { .. }, RegState::Moved | RegState::Released)
+        );
+        if !consumed_vs_live {
+            let diagnostic = Diagnostic::new(
+                Trap::PhiStateConflict,
+                format!("phi merge conflict for register '{name}': {left:?} versus {right:?}"),
+                loc.clone(),
+            )
+            .in_function(function.name())
+            .for_register(name)
+            .with_hint("make the register state agree on all incoming control-flow paths");
+            sink.push_warning(diagnostic);
+            continue;
+        }
         let diagnostic = Diagnostic::new(
             Trap::PhiStateConflict,
-            format!(
-                "phi merge conflict for register '{name}': {:?} versus {:?}",
-                left, right
-            ),
-            block.loc.clone(),
+            "incoming control-flow states do not agree",
+            loc.clone(),
         )
         .in_function(function.name())
         .for_register(name)
         .with_hint("make the register state agree on all incoming control-flow paths");
-        sink.push_warning(diagnostic);
+        sink.push_error(diagnostic);
     }
 }
 
@@ -171,12 +194,17 @@ fn check_function<S: RegStateBackend>(function: &Function, program: &Program, op
             };
             rules::transfer(instruction, &mut state, &mut context);
         }
+        let branch_loc = function.blocks[index]
+            .instrs
+            .last()
+            .map(|ins| ins.loc.clone())
+            .unwrap_or_else(|| function.blocks[index].loc.clone());
         for &successor in &cfg.successors[index] {
             let merged = match &in_states[successor] {
                 None => state.clone(),
                 Some(previous) => {
                     let (merged, conflicts) = previous.merge(&state);
-                    phi_warning(function, successor, conflicts, sink, opts);
+                    phi_warning(function, conflicts, sink, opts, branch_loc.clone());
                     merged
                 }
             };
