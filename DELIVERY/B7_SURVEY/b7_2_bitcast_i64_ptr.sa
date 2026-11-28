@@ -1,0 +1,13 @@
+@main() -> i32:
+    m = -1 as i64
+    p = bitcast m as ptr
+    q = bitcast p as i64
+    ok = eq q, -1
+    !m
+    !p
+    !q
+    br ok -> L_OK, L_ERR
+L_OK:
+    return 42
+L_ERR:
+    return 1

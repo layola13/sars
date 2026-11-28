@@ -1,0 +1,9 @@
+@export add_pair(a: i32, b: i32) -> i32:
+L_ENTRY:
+    sum = add a, b
+    return sum
+
+@main() -> i32:
+    r = call @add_pair(11, 12)
+    !r
+    return 0

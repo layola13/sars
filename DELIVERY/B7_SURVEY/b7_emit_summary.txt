@@ -1,0 +1,22 @@
+
+== run DIFF (9) ==
+02_mutability                              sars(rc=0,'20\n') sci(rc=1,'')
+136_executor_task_queue                    sars(rc=0,'6\n') sci(rc=1,'')
+245_contract_generic_monomorph_share       sars(rc=0,'245\n') sci(rc=1,'')
+398_bitcast_i64_ptr                        sars(rc=1,'') sci(rc=0,'398\n')
+463_vtable_branchy_pick                    sars(rc=1,'') sci(rc=0,'463\n')
+485_vtable_param_float                     sars(rc=1,'') sci(rc=0,'485\n')
+638_vtable_sub2_code                       sars(rc=1,'') sci(rc=0,'638\n')
+769_callback_gt_code                       sars(rc=1,'') sci(rc=0,'769\n')
+878_vtable_multi_code                      sars(rc=1,'') sci(rc=0,'878\n')
+
+== js DIFF (3) ==
+114_callback_from_c                        sars(rc=0,'42\n') sci(rc=9001,'build-fail:')
+136_executor_task_queue                    sars(rc=0,'6\n') sci(rc=9001,'build-fail:')
+245_contract_generic_monomorph_share       sars(rc=0,'245\n') sci(rc=9001,'build-fail:')
+
+== c DIFF (4) ==
+114_callback_from_c                        sars(rc=0,'42\n') sci(rc=9002,'no-source')
+136_executor_task_queue                    sars(rc=0,'6\n') sci(rc=9002,'no-source')
+245_contract_generic_monomorph_share       sars(rc=0,'245\n') sci(rc=9002,'no-source')
+965_npm_handle_ctor_method                 sars(rc=0,'965\n') sci(rc=1,'')

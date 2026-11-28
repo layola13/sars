@@ -1,0 +1,11 @@
+@const VT = vtable { call = @target_fn }
+
+@target_fn(x: i64) -> i32:
+    !x
+    return 7
+
+@main() -> i32:
+    t = &VT
+    fp = load t + 0 as ptr
+    r = call_indirect fp(0)
+    return r

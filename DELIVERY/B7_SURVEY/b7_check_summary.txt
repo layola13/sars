@@ -1,0 +1,50 @@
+total=968
+rc_diff=40
+both_err_code_diff=0
+trap_name_diff=0
+
+== RC DIFF ==
+111_extern_c_abi                              sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+114_callback_from_c                           sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+115_opaque_pointers                           sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+133_select_macro_race                         sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+134_join_all_futures                          sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+135_async_streams                             sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+136_executor_task_queue                       sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+140_yield_now_suspend                         sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+161_generic_associated_types                  sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+166_specialization_fallback                   sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+170_marker_traits                             sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+177_unwrap_unwrap_err                         sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+182_mmap_memory_mapping                       sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+183_signal_handling_setup                     sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+185_dynamic_lib_dlopen                        sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+187_opengl_context_swap                       sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+18_option_map                                 sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+196_lto_link_time_opt                         sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+198_control_flow_guard_cfi                    sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+19_result_question                            sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+245_contract_generic_monomorph_share          sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+247_contract_semver_major_break               sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+251_contract_resource_ownership               sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+253_contract_callback_registration            sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+255_contract_memory_allocator_swap            sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+257_contract_log_facade                       sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+258_contract_thread_local_isolation           sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+30_manual_guard_branch                        sars(rc=0 ENone None) sci(rc=-1 ENone None)
+32_trait_object_vector                        sars(rc=0 ENone None) sci(rc=-1 ENone None)
+334_indirect_import_shadow                    sars(rc=0 ENone None) sci(rc=-1 ENone None)
+335_ts_slice_inverted_bounds                  sars(rc=0 ENone None) sci(rc=-1 ENone None)
+35_iterator_fold                              sars(rc=0 ENone None) sci(rc=-1 ENone None)
+460_vtable_mem_spill                          sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+468_callback_slot_write                       sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+52_queue_rotate                               sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+530_vtable_codeval                            sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+538_vtable_pair_code                          sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+548_vtable_store_code                         sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+608_vtable_neg_code                           sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+658_vtable_load_code                          sars(rc=0 ENone None) sci(rc=1 E1012 MemoryLeak)
+
+== BOTH-ERR CODE DIFF ==
+
+== TRAP NAME DIFF ==
