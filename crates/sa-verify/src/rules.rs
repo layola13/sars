@@ -468,6 +468,54 @@ fn check_atomic(
     ctx.atomics.insert(key, seen | order_seen_bit(order));
 }
 
+/// Extract register-like identifiers referenced by a `$...$` native line,
+/// mirroring sci `collectNativeRegisterNames` (line_classifier_parse.zig:204):
+/// quoted string contents are skipped, `@`/`%`-prefixed tokens are skipped,
+/// and duplicates are removed. Only names already live in `state` are acted
+/// on by the caller, so stray asm keywords are harmless.
+fn native_reg_names(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    let ident_start = |b: u8| b.is_ascii_alphabetic() || b == b'_';
+    let ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if !ident_start(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let prev = if i == 0 { 0 } else { bytes[i - 1] };
+        let start = i;
+        i += 1;
+        while i < bytes.len() && ident_char(bytes[i]) {
+            i += 1;
+        }
+        if prev == b'@' || prev == b'%' {
+            continue;
+        }
+        let token = &text[start..i];
+        if !out.iter().any(|n| n == token) {
+            out.push(token.to_string());
+        }
+    }
+    out
+}
+
 fn mark_escaped_alloc<S: RegStateBackend>(state: &mut S, op: &Operand) {
     if let Operand::Reg(name) = op {
         if matches!(
@@ -909,6 +957,31 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
             if let Some(dest) = ins.dest.as_deref() {
                 state.fallible_insert(dest, false);
             }
+        }
+        InstructionKind::Native { text } => {
+            // sci armNative (verify_body_arms_assign_branch.zig:141-151) walks
+            // every referenced register and consumes it at a contract boundary
+            // (clear_borrow_ctx.zig:131-153): reject stack allocation escapes,
+            // then move-consume. sars previously fell through to the default
+            // arm (read-only), so native escape neither consumed nor rejected
+            // stack allocations.
+            for name in native_reg_names(text) {
+                match state.state_of(&name) {
+                    RegState::Undefined | RegState::Conflict => continue,
+                    RegState::Owned { kind: RegKind::StackAlloc } => {
+                        ctx.report(
+                            Trap::StackEscape,
+                            "stack allocation cannot cross a native escape boundary",
+                            loc,
+                            Some(&name),
+                            None,
+                            false,
+                        );
+                    }
+                    _ => consume(ctx, state, &Operand::Reg(name.clone()), loc),
+                }
+            }
+            define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
         }
         _ => {
             for operand in ins.reads() {
