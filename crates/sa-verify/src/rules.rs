@@ -16,7 +16,7 @@ pub struct RuleCtx<'a> {
 }
 
 impl<'a> RuleCtx<'a> {
-    fn report(
+    pub(crate) fn report(
         &mut self,
         trap: Trap,
         message: impl Into<String>,

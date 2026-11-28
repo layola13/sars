@@ -1,3 +1,4 @@
+pub mod bounds;
 pub mod capability;
 pub mod cfg;
 pub mod mask;
@@ -193,6 +194,19 @@ fn check_function<S: RegStateBackend>(function: &Function, program: &Program, op
     }
 }
 
+/// E1 batch 1: run the static-bounds pre-pass exactly once per function.
+fn run_static_bounds(function: &Function, program: &Program, opts: &VerifyOptions, sink: &mut DiagSink) {
+    let mut context = rules::RuleCtx {
+        program,
+        opts,
+        sink,
+        func_name: function.name(),
+        signature: &function.sig,
+        atomics: &mut HashMap::new(),
+    };
+    bounds::check_static_bounds::<FnState>(function, &mut context);
+}
+
 pub fn verify(program: &Program, opts: &VerifyOptions) -> Result<VerifyReport, Vec<Diagnostic>> {
     let mut sink = DiagSink::default();
     let gas = gas_total(program.functions.iter());
@@ -218,6 +232,7 @@ pub fn verify(program: &Program, opts: &VerifyOptions) -> Result<VerifyReport, V
         } else {
             check_function::<FnState>(function, program, opts, &mut sink);
         }
+        run_static_bounds(function, program, opts, &mut sink);
         report.functions_checked += 1;
         report.instructions_checked += function.all_instructions().len();
     }
@@ -241,6 +256,7 @@ pub fn verify_function(
     } else {
         check_function::<FnState>(function, program, opts, &mut sink);
     }
+    run_static_bounds(function, program, opts, &mut sink);
     if !sink.errors.is_empty() {
         return Err(sink.errors);
     }
