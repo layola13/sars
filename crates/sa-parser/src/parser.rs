@@ -2,6 +2,7 @@ use crate::parse_header;
 use crate::parse_instr;
 use sa_ir::{Block, Diagnostic, Function, FunctionKind, Program, SourceLoc, Trap};
 use sa_lexer::{tokenize, Token, TokenKind};
+use std::collections::HashMap;
 
 pub fn parse_program(tokens: &[Token]) -> Result<Program, Vec<Diagnostic>> {
     let mut p = Parser {
@@ -12,6 +13,7 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, Vec<Diagnostic>> {
         labels: Vec::new(),
         in_macro: false,
         pending_loc: None,
+        def_values: HashMap::new(),
     };
     let mut start = 0usize;
     for i in 0..=tokens.len() {
@@ -120,6 +122,10 @@ struct Parser {
     /// sci flattener `pending_loc`: a `#loc` directive retargets the next
     /// emitted instruction to its upstream source position (one-shot).
     pending_loc: Option<SourceLoc>,
+    /// B6: first `#def` value per name in this file. sci's DefDict reports
+    /// DuplicateDef when a later definition evaluates to a different value;
+    /// identical redefinitions (same value reached twice) are tolerated.
+    def_values: HashMap<String, String>,
 }
 
 impl Parser {
@@ -151,6 +157,23 @@ impl Parser {
                 match line[0].text.as_str() {
                     "#def" => {
                         if let Some(d) = parse_header::parse_def(line) {
+                            match self.def_values.get(&d.name) {
+                                Some(previous) if previous != &d.value => {
+                                    // B6: sci putExpression evaluates every .def
+                                    // and reports DuplicateDef on a value clash.
+                                    let diag = Diagnostic::new(
+                                        Trap::DuplicateDef,
+                                        "duplicate definition detected during flattening",
+                                        d.loc.clone(),
+                                    )
+                                    .with_hint(format!("conflicting definition '{}'", d.name));
+                                    self.diags.push(diag);
+                                }
+                                Some(_) => {}
+                                None => {
+                                    self.def_values.insert(d.name.clone(), d.value.clone());
+                                }
+                            }
                             self.program.defs.push(d);
                         } else {
                             self.diags.push(err(line, "invalid #def declaration"));
@@ -530,6 +553,32 @@ mod tests {
         let text = wasm.function("f").unwrap().to_text();
         assert!(text.contains("add 3, 4"));
         assert!(!text.contains("add 1, 2"));
+    }
+
+    #[test]
+    fn duplicate_def_with_different_value_is_reported() {
+        let errs = parse_source(
+            "#def A = 1\n#def A = 2\n@f():\nL_ENTRY:\n  nop\n",
+            "t.sa",
+        )
+        .unwrap_err();
+        let d = errs
+            .iter()
+            .find(|d| d.trap == Trap::DuplicateDef)
+            .expect("DuplicateDef diagnostic");
+        assert_eq!(d.message, "duplicate definition detected during flattening");
+        assert_eq!(d.loc.line, 2);
+        assert_eq!(d.hint.as_deref(), Some("conflicting definition 'A'"));
+    }
+
+    #[test]
+    fn duplicate_def_with_same_value_is_tolerated() {
+        let p = parse_source(
+            "#def A = 1\n#def A = 1\n@f():\nL_ENTRY:\n  nop\n",
+            "t.sa",
+        )
+        .expect("identical redefinition is tolerated");
+        assert_eq!(p.defs.len(), 2);
     }
 
     #[test]
