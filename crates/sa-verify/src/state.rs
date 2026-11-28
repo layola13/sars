@@ -23,6 +23,18 @@ pub enum RegState {
 
 pub type RegMap = HashMap<String, RegState>;
 
+/// sci `reg_state_change.zig:545-549` per-register flag bits (B9 batch A).
+/// sars previously had no counterpart to sci's `flags[]` side table; the
+/// transfer arms in `rules.rs` write these bits and the CFG merge joins
+/// them, but batch A reads them in no exit judgment.
+pub mod reg_flag {
+    pub const RAW_PTR: u8 = 0x01;
+    pub const STACK: u8 = 0x02;
+    pub const CONST_DATA: u8 = 0x04;
+    pub const BRANCH_COND: u8 = 0x08;
+    pub const EPHEMERAL: u8 = 0x10;
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FnState {
     pub regs: RegMap,
@@ -32,6 +44,8 @@ pub struct FnState {
     pub origin_base: HashMap<String, RegState>,
     pub escaped: HashSet<String>,
     pub borrow_params: HashSet<String>,
+    pub flags: HashMap<String, u8>,
+    pub consumed_in_function: HashSet<String>,
 }
 
 impl FnState {
@@ -70,6 +84,46 @@ impl FnState {
         self.masks.insert(reg.to_string(), mask);
     }
 
+    pub fn flag_get(&self, reg: &str) -> u8 {
+        self.flags.get(reg).copied().unwrap_or(0)
+    }
+
+    pub fn flag_set(&mut self, reg: &str, bits: u8) {
+        if bits == 0 {
+            return;
+        }
+        *self.flags.entry(reg.to_string()).or_insert(0) |= bits;
+    }
+
+    pub fn flag_clear(&mut self, reg: &str, bits: u8) {
+        let now_zero = match self.flags.get_mut(reg) {
+            Some(value) => {
+                *value &= !bits;
+                *value == 0
+            }
+            None => false,
+        };
+        if now_zero {
+            self.flags.remove(reg);
+        }
+    }
+
+    pub fn flag_replace(&mut self, reg: &str, byte: u8) {
+        if byte == 0 {
+            self.flags.remove(reg);
+        } else {
+            self.flags.insert(reg.to_string(), byte);
+        }
+    }
+
+    pub fn consumed_mark(&mut self, reg: &str) {
+        self.consumed_in_function.insert(reg.to_string());
+    }
+
+    pub fn is_consumed_in_function(&self, reg: &str) -> bool {
+        self.consumed_in_function.contains(reg)
+    }
+
     pub fn is_same(&self, other: &FnState) -> bool {
         self.regs == other.regs
             && self.masks == other.masks
@@ -78,6 +132,8 @@ impl FnState {
             && self.origin_base == other.origin_base
             && self.escaped == other.escaped
             && self.borrow_params == other.borrow_params
+            && self.flags == other.flags
+            && self.consumed_in_function == other.consumed_in_function
     }
 
     pub fn merge(&self, other: &FnState) -> (FnState, Vec<(String, RegState, RegState)>) {
@@ -129,6 +185,25 @@ impl FnState {
         }
         out.escaped = self.escaped.union(&other.escaped).cloned().collect();
         out.borrow_params = self.borrow_params.union(&other.borrow_params).cloned().collect();
+        // B9 batch A (design 9.3): flags join by intersection — a bit
+        // survives a merge only when both incoming paths carry it, so a
+        // branch disagreement can never manufacture an exemption.
+        let mut flag_keys: Vec<&String> = self.flags.keys().chain(other.flags.keys()).collect();
+        flag_keys.sort();
+        flag_keys.dedup();
+        for key in flag_keys {
+            let joined = self.flag_get(key) & other.flag_get(key);
+            if joined != 0 {
+                out.flags.insert(key.clone(), joined);
+            }
+        }
+        // consumed_in_function joins by union: sci accumulates it
+        // monotonically over the whole function body.
+        out.consumed_in_function = self
+            .consumed_in_function
+            .union(&other.consumed_in_function)
+            .cloned()
+            .collect();
         (out, conflicts)
     }
 }
@@ -174,6 +249,13 @@ pub trait RegStateBackend: Clone + Default {
     fn escaped_insert(&mut self, reg: &str);
     fn borrow_params_contains(&self, reg: &str) -> bool;
     fn borrow_params_insert(&mut self, reg: &str);
+    fn borrow_origin_get(&self, reg: &str) -> Option<String>;
+    fn flag_get(&self, reg: &str) -> u8;
+    fn flag_set(&mut self, reg: &str, bits: u8);
+    fn flag_clear(&mut self, reg: &str, bits: u8);
+    fn flag_replace(&mut self, reg: &str, byte: u8);
+    fn consumed_mark(&mut self, reg: &str);
+    fn is_consumed_in_function(&self, reg: &str) -> bool;
     fn regs_snapshot(&self) -> Vec<(String, RegState)>;
     fn is_same(&self, other: &Self) -> bool;
     fn merge(&self, other: &Self) -> (Self, Vec<(String, RegState, RegState)>);
@@ -246,6 +328,34 @@ impl RegStateBackend for FnState {
 
     fn borrow_params_insert(&mut self, reg: &str) {
         self.borrow_params.insert(reg.to_string());
+    }
+
+    fn borrow_origin_get(&self, reg: &str) -> Option<String> {
+        self.borrow_origin.get(reg).cloned()
+    }
+
+    fn flag_get(&self, reg: &str) -> u8 {
+        FnState::flag_get(self, reg)
+    }
+
+    fn flag_set(&mut self, reg: &str, bits: u8) {
+        FnState::flag_set(self, reg, bits);
+    }
+
+    fn flag_clear(&mut self, reg: &str, bits: u8) {
+        FnState::flag_clear(self, reg, bits);
+    }
+
+    fn flag_replace(&mut self, reg: &str, byte: u8) {
+        FnState::flag_replace(self, reg, byte);
+    }
+
+    fn consumed_mark(&mut self, reg: &str) {
+        FnState::consumed_mark(self, reg);
+    }
+
+    fn is_consumed_in_function(&self, reg: &str) -> bool {
+        FnState::is_consumed_in_function(self, reg)
     }
 
     fn regs_snapshot(&self) -> Vec<(String, RegState)> {

@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 
 use regstate::CapabilityState;
-use state::{FnState, RegKind, RegState, RegStateBackend};
+use state::{reg_flag, FnState, RegKind, RegState, RegStateBackend};
 
 #[derive(Debug, Clone)]
 pub struct VerifyOptions {
@@ -101,6 +101,11 @@ fn initial_state<S: RegStateBackend>(function: &Function) -> S {
         state.set(&param.name, RegState::Owned { kind: RegKind::Param });
         if param.cap == CapPrefix::Borrow {
             state.borrow_params_insert(&param.name);
+        }
+        if param.cap == CapPrefix::Raw {
+            // sci verify_body.zig param seeding: a raw parameter carries
+            // no ownership, flagged regFlagRawPointer (B9 batch A).
+            state.flag_set(&param.name, reg_flag::RAW_PTR);
         }
     }
     for local in &function.locals {

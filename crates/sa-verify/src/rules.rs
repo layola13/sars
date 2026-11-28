@@ -1,5 +1,5 @@
 use crate::mask::bit;
-use crate::state::{RegKind, RegState, RegStateBackend};
+use crate::state::{reg_flag, RegKind, RegState, RegStateBackend};
 use crate::{DiagSink, VerifyOptions};
 use sa_ir::{
     Capability, CapPrefix, Diagnostic, FunctionKind, Instruction, InstructionKind, Operand,
@@ -84,6 +84,10 @@ fn define<S: RegStateBackend>(ctx: &mut RuleCtx, ins: &Instruction, state: &mut 
             check_redefine(ctx, state, dest, loc);
         }
         state.set(dest, new_state.clone());
+        // sci assignValueCtx clears BRANCH_COND|EPHEMERAL on every
+        // (re)definition; arm-specific flag writes in apply_reg_flags run
+        // after this, mirroring sci arms setting flags after assignValue.
+        state.flag_clear(dest, reg_flag::BRANCH_COND | reg_flag::EPHEMERAL);
     }
 }
 
@@ -746,6 +750,154 @@ fn check_leaks_with<S: RegStateBackend>(
     }
 }
 
+fn mark_consumed<S: RegStateBackend>(state: &mut S, op: &Operand) {
+    if let Operand::Reg(name) = op {
+        state.consumed_mark(name);
+    }
+}
+
+/// B9 batch A: maintain the sci `flags[]` / `consumed_in_function[]` side
+/// tables (DELIVERY/B9_DESIGN.md sections 2 and 9.4). Nothing in batch A
+/// reads these tables for a judgment; they are infrastructure so batch B
+/// can switch the exit scan to mask+flags without another structural pass.
+/// Writes run after the transfer match, observing the post-`define` state,
+/// exactly like sci arms set flags after `assignValue`.
+fn apply_reg_flags<S: RegStateBackend>(ins: &Instruction, state: &mut S) {
+    let dests: Vec<&str> = ins.all_dests().collect();
+    match &ins.kind {
+        InstructionKind::StackAlloc { .. } => {
+            for dest in &dests {
+                state.flag_replace(dest, reg_flag::STACK);
+            }
+        }
+        InstructionKind::Load { .. } => {
+            // sci armLoad: dest flag is the loaded type — ptr is a raw
+            // pointer, anything else an ephemeral scalar (load's default
+            // type is i64 when no `as` annotation is present).
+            let byte = if ins.ty == Some(PrimType::Ptr) {
+                reg_flag::RAW_PTR
+            } else {
+                reg_flag::EPHEMERAL
+            };
+            for dest in &dests {
+                state.flag_replace(dest, byte);
+            }
+        }
+        InstructionKind::Take { .. } | InstructionKind::Op { .. } => {
+            // sci armLoad (take) and armOp both leave the dest flag at 0.
+            for dest in &dests {
+                state.flag_replace(dest, 0);
+            }
+        }
+        InstructionKind::Assign { src } => {
+            // sci armAssign: propagate RAW_PTR from a register source;
+            // an ephemeral source (literal or EPHEMERAL-flagged register)
+            // replaces the dest byte with EPHEMERAL.
+            let (src_flags, src_ephemeral) = match src {
+                Operand::Reg(name) => {
+                    let flags = state.flag_get(name);
+                    (flags, flags & reg_flag::EPHEMERAL != 0)
+                }
+                Operand::Int(_) | Operand::Float(_) => (0, true),
+                _ => (0, false),
+            };
+            for dest in &dests {
+                if src_flags & reg_flag::RAW_PTR != 0 {
+                    state.flag_set(dest, reg_flag::RAW_PTR);
+                }
+                if src_ephemeral {
+                    state.flag_replace(dest, reg_flag::EPHEMERAL);
+                }
+            }
+        }
+        InstructionKind::Call { .. }
+        | InstructionKind::CallIndirect { .. }
+        | InstructionKind::Try { .. }
+        | InstructionKind::Cmpxchg { .. } => {
+            // sci armCall / armTry / armCmpxchg reset the dest flag to 0.
+            for dest in &dests {
+                state.flag_replace(dest, 0);
+            }
+        }
+        InstructionKind::AtomicLoad { .. } | InstructionKind::AtomicRmw { .. } => {
+            for dest in &dests {
+                state.flag_replace(dest, reg_flag::EPHEMERAL);
+            }
+        }
+        InstructionKind::VaStart => {
+            for dest in &dests {
+                state.flag_replace(dest, reg_flag::RAW_PTR);
+            }
+        }
+        InstructionKind::VaArg { .. } => {
+            let byte = if ins.ty == Some(PrimType::Ptr) {
+                reg_flag::RAW_PTR
+            } else {
+                reg_flag::EPHEMERAL
+            };
+            for dest in &dests {
+                state.flag_replace(dest, byte);
+            }
+        }
+        InstructionKind::RawCast { src } | InstructionKind::AssumeSafe { src } => {
+            // sci: a safe pointer reinterpreted from a raw pointer keeps
+            // the raw flag, like assign propagation.
+            if let Operand::Reg(name) = src {
+                if state.flag_get(name) & reg_flag::RAW_PTR != 0 {
+                    for dest in &dests {
+                        state.flag_set(dest, reg_flag::RAW_PTR);
+                    }
+                }
+            }
+        }
+        InstructionKind::Borrow { .. } | InstructionKind::AssumeBorrow { .. } => {
+            // sci isStackAllocated / isConstData resolve through the
+            // borrow origin; batch A materialises that by inheriting the
+            // origin's STACK / CONST_DATA bits onto the view (design 9.4).
+            // The owned-source view keeps no exemption bit, preserving
+            // the move-while-borrowed backstop.
+            for dest in &dests {
+                if let Some(origin) = state.borrow_origin_get(dest) {
+                    let inherited =
+                        state.flag_get(&origin) & (reg_flag::STACK | reg_flag::CONST_DATA);
+                    if inherited != 0 {
+                        state.flag_set(dest, inherited);
+                    }
+                }
+            }
+        }
+        InstructionKind::Br { cond, .. } | InstructionKind::BrNull { cond, .. } => {
+            if let Operand::Reg(name) = cond {
+                state.flag_set(name, reg_flag::BRANCH_COND);
+            }
+        }
+        _ => {}
+    }
+    // consumed_in_function: sci collects this syntactically over the whole
+    // function body (markInstructionConsumedRegs); batch A records the
+    // same events at transfer time and the CFG merge unions them.
+    match &ins.kind {
+        InstructionKind::Move { src }
+        | InstructionKind::Assign { src }
+        | InstructionKind::Try { src } => mark_consumed(state, src),
+        InstructionKind::Release { reg } => state.consumed_mark(reg),
+        InstructionKind::Return { value } | InstructionKind::EarlyReturn { value } => {
+            if let Some(op) = value {
+                mark_consumed(state, op);
+            }
+        }
+        InstructionKind::Transfer { value, .. } => mark_consumed(state, value),
+        InstructionKind::Call { args, .. } | InstructionKind::CallIndirect { args, .. } => {
+            for arg in args {
+                if arg.cap == CapPrefix::Move {
+                    mark_consumed(state, &arg.value);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut RuleCtx) {
     let loc = &ins.loc;
     let plan = crate::runtime_mask::plan(ins, state);
@@ -1087,6 +1239,7 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
             define(ctx, ins, state, RegState::Owned { kind: RegKind::Value }, loc);
         }
     }
+    apply_reg_flags(ins, state);
     if let Some(plan) = plan {
         let bypass_errored = ctx.sink.errors.len() > errors_before;
         if let Some(decision) = crate::runtime_mask::apply(state, &plan, bypass_errored) {

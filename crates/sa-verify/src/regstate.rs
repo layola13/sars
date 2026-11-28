@@ -1,6 +1,6 @@
 use crate::mask::{bit, CapabilityMask};
 use crate::state::{merge_reg, RegKind, RegState, RegStateBackend};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const FLAG_FALLIBLE_PRESENT: u8 = 0b0001;
 const FLAG_FALLIBLE_TRUE: u8 = 0b0010;
@@ -27,6 +27,10 @@ pub struct CapEntry {
     origin: Option<String>,
     base: Option<RegState>,
     flags: u8,
+    /// sci `flags[]` byte for this register (B9 batch A side table; kept
+    /// apart from `flags` above, which packs this backend's own fallible /
+    /// escaped / borrow-param bookkeeping).
+    reg_flags: u8,
 }
 
 impl CapEntry {
@@ -40,6 +44,7 @@ impl CapEntry {
             origin: None,
             base: None,
             flags: 0,
+            reg_flags: 0,
         };
         entry.apply_state(state);
         entry
@@ -151,6 +156,8 @@ impl CapEntry {
 #[derive(Debug, Clone, Default)]
 pub struct CapabilityState {
     entries: HashMap<String, CapEntry>,
+    /// sci `consumed_in_function[]` counterpart (B9 batch A).
+    consumed: HashSet<String>,
 }
 
 impl CapabilityState {
@@ -229,17 +236,23 @@ impl CapabilityState {
             || right.map(CapEntry::escaped).unwrap_or(false);
         let borrow_param = left.map(CapEntry::borrow_param).unwrap_or(false)
             || right.map(CapEntry::borrow_param).unwrap_or(false);
-        if fallible.is_some() || origin.is_some() || base.is_some() || escaped || borrow_param {
+        // B9 batch A (design 9.3): the sci flags byte joins by intersection.
+        let reg_flags = left.map(|e| e.reg_flags).unwrap_or(0)
+            & right.map(|e| e.reg_flags).unwrap_or(0);
+        if fallible.is_some() || origin.is_some() || base.is_some() || escaped || borrow_param || reg_flags != 0 {
             let merged_entry = ensure(&mut entry);
             merged_entry.set_fallible(fallible);
             merged_entry.origin = origin;
             merged_entry.base = base;
+            merged_entry.reg_flags = reg_flags;
             if escaped {
                 merged_entry.flags |= FLAG_ESCAPED;
             }
             if borrow_param {
                 merged_entry.flags |= FLAG_BORROW_PARAM;
             }
+        } else if let Some(existing) = entry.as_mut() {
+            existing.reg_flags = reg_flags;
         }
         entry
     }
@@ -326,6 +339,38 @@ impl RegStateBackend for CapabilityState {
         self.entry_mut(reg).flags |= FLAG_BORROW_PARAM;
     }
 
+    fn borrow_origin_get(&self, reg: &str) -> Option<String> {
+        self.entries.get(reg).and_then(|entry| entry.origin.clone())
+    }
+
+    fn flag_get(&self, reg: &str) -> u8 {
+        self.entries.get(reg).map(|entry| entry.reg_flags).unwrap_or(0)
+    }
+
+    fn flag_set(&mut self, reg: &str, bits: u8) {
+        if bits != 0 {
+            self.entry_mut(reg).reg_flags |= bits;
+        }
+    }
+
+    fn flag_clear(&mut self, reg: &str, bits: u8) {
+        if let Some(entry) = self.entries.get_mut(reg) {
+            entry.reg_flags &= !bits;
+        }
+    }
+
+    fn flag_replace(&mut self, reg: &str, byte: u8) {
+        self.entry_mut(reg).reg_flags = byte;
+    }
+
+    fn consumed_mark(&mut self, reg: &str) {
+        self.consumed.insert(reg.to_string());
+    }
+
+    fn is_consumed_in_function(&self, reg: &str) -> bool {
+        self.consumed.contains(reg)
+    }
+
     fn regs_snapshot(&self) -> Vec<(String, RegState)> {
         self.entries
             .iter()
@@ -335,7 +380,7 @@ impl RegStateBackend for CapabilityState {
     }
 
     fn is_same(&self, other: &Self) -> bool {
-        self.entries == other.entries
+        self.entries == other.entries && self.consumed == other.consumed
     }
 
     fn merge(&self, other: &Self) -> (Self, Vec<(String, RegState, RegState)>) {
@@ -359,6 +404,7 @@ impl RegStateBackend for CapabilityState {
                 out.entries.insert(key.clone(), entry);
             }
         }
+        out.consumed = self.consumed.union(&other.consumed).cloned().collect();
         (out, conflicts)
     }
 }
@@ -371,11 +417,14 @@ impl From<&crate::state::FnState> for CapabilityState {
         keys.extend(legacy.origin_base.keys());
         keys.extend(legacy.escaped.iter());
         keys.extend(legacy.borrow_params.iter());
+        keys.extend(legacy.flags.keys());
         keys.sort();
         keys.dedup();
         let mut out = CapabilityState::default();
+        out.consumed = legacy.consumed_in_function.clone();
         for key in keys {
             let mut entry = CapEntry::from_state(legacy.state_of(key));
+            entry.reg_flags = legacy.flags.get(key).copied().unwrap_or(0);
             if let Some(mask) = legacy.masks.get(key) {
                 entry.mask = Some(CapabilityMask::new(*mask));
             }
@@ -397,7 +446,11 @@ impl From<&crate::state::FnState> for CapabilityState {
 impl From<&CapabilityState> for crate::state::FnState {
     fn from(collapsed: &CapabilityState) -> Self {
         let mut out = crate::state::FnState::default();
+        out.consumed_in_function = collapsed.consumed.clone();
         for (key, entry) in &collapsed.entries {
+            if entry.reg_flags != 0 {
+                out.flags.insert(key.clone(), entry.reg_flags);
+            }
             if entry.variant != Variant::Undefined {
                 out.regs.insert(key.clone(), entry.state());
             }
