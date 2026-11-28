@@ -830,6 +830,30 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
                     ctx.signature.return_cap,
                     Some(sa_ir::CapPrefix::Borrow) | Some(sa_ir::CapPrefix::Raw)
                 );
+                // sci armReturn (verify_body_arms_call_return.zig:303-305): a stack
+                // allocation cannot escape its defining function by move. Only
+                // applies to the non-fallible, by-value path, matching sci's
+                // `else` branch after the fallible contract check.
+                if let Operand::Reg(name) = operand {
+                    if by_value
+                        && state.fallible_get(name) != Some(true)
+                        && matches!(
+                            state.state_of(name),
+                            RegState::Owned {
+                                kind: RegKind::StackAlloc
+                            }
+                        )
+                    {
+                        ctx.report(
+                            Trap::StackEscape,
+                            "stack allocation cannot be returned",
+                            loc,
+                            Some(name),
+                            None,
+                            false,
+                        );
+                    }
+                }
                 if by_value {
                     // sci armReturn: immutable registers cannot be returned by move.
                     const_mutation(ctx, operand, "returned by move", loc);
