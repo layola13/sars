@@ -54,8 +54,15 @@ fn a1a_mask_name_matches_sci_canonical_states() {
 }
 
 #[test]
-fn a1a_truth_table_matches_sci_20_entries() {
-    let expected: [(u16, Op, bool, u16, Option<TrapKind>); 20] = [
+fn a1a_truth_table_sci_base_plus_transfer_dest_rows() {
+    // B5-transfer batch (muse-approved plan #19164/#19201, 2026-11-28):
+    // the 20 sci-base rows keep their shape; the single legal
+    // TransferOwn row is corrected to the DEST-side semantics
+    // (container stays ACTIVE, gains owns_children = 0x401) and 8
+    // dest-side rows are appended so every sci armTransfer trap mask
+    // resolves in the table instead of falling off into
+    // RegisterRedefinition.
+    let expected: [(u16, Op, bool, u16, Option<TrapKind>); 28] = [
         (0x00, Op::Alloc, true, 0x01, None),
         (0x01, Op::BorrowRead, true, 0x02, None),
         (0x01, Op::BorrowMut, true, 0x04, None),
@@ -73,11 +80,20 @@ fn a1a_truth_table_matches_sci_20_entries() {
         (0x40, Op::FfiAssumeBorrow, true, 0x33, None),
         (0x100, Op::Alloc, true, 0x100, None),
         (0x200, Op::Move, true, 0x200, None),
-        (0x01, Op::TransferOwn, true, 0x08, None),
+        (0x01, Op::TransferOwn, true, 0x401, None),
         (0x10, Op::TransferOwn, false, 0x00, Some(TrapKind::TransferIntoBorrow)),
         (0x101, Op::TransferOwn, false, 0x00, Some(TrapKind::TransferIntoImmutable)),
+        // dest-side TransferOwn rows added by the B5-transfer batch.
+        (0x401, Op::TransferOwn, true, 0x401, None),
+        (0x08, Op::TransferOwn, false, 0x00, Some(TrapKind::UseAfterMove)),
+        (0x02, Op::TransferOwn, false, 0x00, Some(TrapKind::BorrowConflict)),
+        (0x04, Op::TransferOwn, false, 0x00, Some(TrapKind::BorrowConflict)),
+        (0x20, Op::TransferOwn, false, 0x00, Some(TrapKind::TransferIntoBorrow)),
+        (0x200, Op::TransferOwn, false, 0x00, Some(TrapKind::TransferIntoBorrow)),
+        (0x11, Op::TransferOwn, false, 0x00, Some(TrapKind::TransferIntoBorrow)),
+        (0x100, Op::TransferOwn, false, 0x00, Some(TrapKind::TransferIntoImmutable)),
     ];
-    assert_eq!(TRUTH_TABLE.len(), 20);
+    assert_eq!(TRUTH_TABLE.len(), 28);
     for (index, (row, want)) in TRUTH_TABLE.iter().zip(expected.iter()).enumerate() {
         let got = Transition {
             prev_mask: row.prev_mask,

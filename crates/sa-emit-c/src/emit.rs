@@ -815,7 +815,8 @@ fn emit_instruction(
         }
     };
     match &ins.kind {
-        InstructionKind::Nop | InstructionKind::Release { .. } => {}
+        // sci: transfer is a verifier-visible annotation, runtime no-op.
+        InstructionKind::Nop | InstructionKind::Release { .. } | InstructionKind::Transfer { .. } => {}
         InstructionKind::Panic { .. } => out.push_str("  sa_panic();\n"),
         InstructionKind::Alloc { size } | InstructionKind::StackAlloc { size } => {
             let sz = ctx.expr(size, PrimType::U64, diags);

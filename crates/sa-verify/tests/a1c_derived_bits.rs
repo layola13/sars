@@ -69,10 +69,15 @@ fn a1c_transfer_own_sets_owns_children_and_consumes_source() {
     engine.transfer_own(0, 1).unwrap();
     assert_eq!(engine.mask(0), bit::CONSUMED);
     assert_eq!(engine.mask(1), bit::ACTIVE | bit::OWNS_CHILDREN);
+    // B5-transfer batch (#19164/#19201): the 0x01 row's new_mask was the
+    // old source-side artifact (CONSUMED); the dest-side correction keeps
+    // the container ACTIVE and adds owns_children (0x401). The engine's
+    // own effect below already wrote exactly that mask.
     assert_eq!(
         CapabilityEngine::decide(0x01, Op::TransferOwn),
-        Some((true, 0x08, None))
+        Some((true, 0x401, None))
     );
+    assert_eq!(engine.mask(1), 0x401);
 }
 
 #[test]

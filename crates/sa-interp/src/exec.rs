@@ -368,6 +368,8 @@ impl<'a> Interpreter<'a> {
                 InstructionKind::Fence { .. }
                 | InstructionKind::VaStart
                 | InstructionKind::VaEnd
+                // sci: transfer is a verifier-visible annotation, runtime no-op.
+                | InstructionKind::Transfer { .. }
                 | InstructionKind::Nop
                 | InstructionKind::Native { .. } => {}
                 InstructionKind::Try { src } => {

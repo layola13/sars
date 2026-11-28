@@ -103,6 +103,12 @@ where
         | InstructionKind::VaEnd
         | InstructionKind::Native { .. }
         | InstructionKind::Nop => {}
+        InstructionKind::Transfer { container, value } => {
+            let next = f(container);
+            *container = next;
+            let next = f(value);
+            *value = next;
+        }
     }
 }
 

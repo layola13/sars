@@ -1,3 +1,4 @@
+use crate::mask::bit;
 use crate::state::{RegKind, RegState, RegStateBackend};
 use crate::{DiagSink, VerifyOptions};
 use sa_ir::{
@@ -800,6 +801,95 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
                     state.fallible_insert(dest, fallible);
                 }
             }
+        }
+        InstructionKind::Transfer { container, value } => {
+            // sci armTransfer (verify_body_arms_alloc_borrow.zig:251-302):
+            // `transfer <container>, <value>` — ownership of `value` moves
+            // into `container`. Verifier-visible annotation; the preceding
+            // `store` already did the data move. Check order below mirrors
+            // sci verbatim: borrowed-container -> immutable -> consumed ->
+            // active borrows, then the value retires like a `^` move-out
+            // and the container gains the boolean owns_children bit.
+            let (container_reg, _) = match (container, value) {
+                (Operand::Reg(c), Operand::Reg(_)) => (c, ()),
+                _ => {
+                    ctx.report(
+                        Trap::TransferIntoBorrow,
+                        "transfer requires register operands",
+                        loc,
+                        None,
+                        None,
+                        false,
+                    );
+                    return;
+                }
+            };
+            // Destination must be a live OWNED root. Transferring into a
+            // borrow view / ffi borrow / interior pointer would leak the
+            // value when the borrow ends. (sci also walks the interior
+            // tree here; in sars every interior pointer carries the
+            // INTERIOR_PTR bit, so the mask test covers it.)
+            let cmask = state.mask_of(container_reg);
+            if cmask & (bit::BORROW_VIEW | bit::FFI_BORROW | bit::INTERIOR_PTR) != 0 {
+                ctx.report(
+                    Trap::TransferIntoBorrow,
+                    "cannot transfer ownership into a borrowed container",
+                    loc,
+                    Some(container_reg),
+                    None,
+                    false,
+                );
+                return;
+            }
+            // sci isImmutableConst: an @const hard constant (flag) OR a
+            // Rust-style immutable binding (capability bit 0x0100). sars
+            // keeps the bit in the mask and named @const symbols in
+            // program.consts.
+            if cmask & bit::IMMUTABLE != 0 || is_named_const(ctx, container).is_some() {
+                ctx.report(
+                    Trap::TransferIntoImmutable,
+                    "cannot transfer ownership into an immutable container",
+                    loc,
+                    Some(container_reg),
+                    None,
+                    false,
+                );
+                return;
+            }
+            // sars encodes an actively-borrowed container as LOCKED_* bits
+            // without the ACTIVE bit (sci uses active|locked), so the locked
+            // test must precede the active test to keep sci's borrow_conflict
+            // message for that state.
+            if cmask & (bit::LOCKED_READ | bit::LOCKED_MUT) != 0 {
+                ctx.report(
+                    Trap::BorrowConflict,
+                    "container has active borrows",
+                    loc,
+                    Some(container_reg),
+                    None,
+                    false,
+                );
+                return;
+            }
+            if cmask & bit::ACTIVE == 0 {
+                ctx.report(
+                    Trap::UseAfterMove,
+                    "cannot transfer into a consumed container",
+                    loc,
+                    Some(container_reg),
+                    None,
+                    false,
+                );
+                return;
+            }
+            // Value retires exactly like a `^` move-out, so the
+            // function-exit leak check is satisfied.
+            consume(ctx, state, value, loc);
+            // Record the obligation on the container with a single boolean
+            // owns_children bit (re-read after the consume so a
+            // self-transfer `transfer x, x` keeps the consumed state).
+            let cmask = state.mask_of(container_reg);
+            state.set_mask(container_reg, cmask | bit::OWNS_CHILDREN);
         }
         InstructionKind::Store { addr, value } => {
             for operand in ins.reads() {

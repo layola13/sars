@@ -575,6 +575,10 @@ pub enum InstructionKind {
     Fence { order: AtomicOrdering },
     Try { src: Operand },
     EarlyReturn { value: Option<Operand> },
+    /// sci armTransfer: `transfer <container>, <value>` — ownership of
+    /// `value` moves into `container`. Verifier-visible annotation,
+    /// runtime no-op.
+    Transfer { container: Operand, value: Operand },
     Panic { message: Option<String>, args: Vec<Operand> },
     VaStart,
     VaArg { src: Operand },
@@ -685,6 +689,10 @@ impl Instruction {
                 out.push(&addr.base);
                 out.push(value);
             }
+            InstructionKind::Transfer { container, value } => {
+                out.push(container);
+                out.push(value);
+            }
             InstructionKind::Panic { args, .. } => out.extend(args.iter()),
             InstructionKind::Take { addr } => out.push(&addr.base),
             InstructionKind::Release { .. }
@@ -788,6 +796,9 @@ impl Instruction {
             ),
             InstructionKind::Fence { order } => format!("fence {}", order.name()),
             InstructionKind::Try { src } => format!("?{src}"),
+            InstructionKind::Transfer { container, value } => {
+                format!("transfer {container}, {value}")
+            }
             InstructionKind::EarlyReturn { value } => match value {
                 Some(v) => format!("early_return {v}"),
                 None => "early_return".to_string(),

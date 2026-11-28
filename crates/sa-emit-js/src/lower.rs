@@ -471,7 +471,8 @@ fn lower_instr(
                 ));
             }
         }
-        InstructionKind::Nop => {}
+        // sci: transfer is a verifier-visible annotation, runtime no-op.
+        InstructionKind::Nop | InstructionKind::Transfer { .. } => {}
     }
     Ok(false)
 }

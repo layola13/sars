@@ -70,6 +70,18 @@ pub(crate) fn parse_instruction(
             addr: Address::parse(&join(&parts[0])),
             value: Operand::parse(&join(&parts[1])),
         }
+    } else if first.is_ident("transfer") {
+        // sci line_classifier_direct.zig: `transfer <container>, <value>`
+        // — a comma pair; a missing/empty side is not classified as a
+        // transfer line at all.
+        let parts = split_commas(&work[1..]);
+        if parts.len() != 2 {
+            return missing_operand(diags, loc, function, "transfer");
+        }
+        InstructionKind::Transfer {
+            container: Operand::parse(&join(&parts[0])),
+            value: Operand::parse(&join(&parts[1])),
+        }
     } else if first.is_ident("jmp") {
         InstructionKind::Jmp {
             target: join(&work[1..]),
@@ -476,6 +488,16 @@ mod tests {
             parse("x = stack_alloc 8").kind,
             InstructionKind::StackAlloc { size: Operand::Int(8) }
         );
+        // sci line_classifier_direct.zig: `transfer <container>, <value>`.
+        let transfer = parse("transfer x, y");
+        assert_eq!(
+            transfer.kind,
+            InstructionKind::Transfer {
+                container: Operand::Reg("x".into()),
+                value: Operand::Reg("y".into()),
+            }
+        );
+        assert_eq!(transfer.dest, None);
         let load = parse("x = load arr+4 as i32");
         assert_eq!(
             load.kind,

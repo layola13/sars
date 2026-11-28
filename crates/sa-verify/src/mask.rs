@@ -156,7 +156,7 @@ pub struct Transition {
     pub trap: Option<TrapKind>,
 }
 
-pub const TRUTH_TABLE: [Transition; 20] = [
+pub const TRUTH_TABLE: [Transition; 28] = [
     Transition { prev_mask: 0x00, op: Op::Alloc, legal: true, new_mask: 0x01, trap: None },
     Transition { prev_mask: 0x01, op: Op::BorrowRead, legal: true, new_mask: 0x02, trap: None },
     Transition { prev_mask: 0x01, op: Op::BorrowMut, legal: true, new_mask: 0x04, trap: None },
@@ -174,9 +174,23 @@ pub const TRUTH_TABLE: [Transition; 20] = [
     Transition { prev_mask: 0x40, op: Op::FfiAssumeBorrow, legal: true, new_mask: 0x33, trap: None },
     Transition { prev_mask: 0x100, op: Op::Alloc, legal: true, new_mask: 0x100, trap: None },
     Transition { prev_mask: 0x200, op: Op::Move, legal: true, new_mask: 0x200, trap: None },
-    Transition { prev_mask: 0x01, op: Op::TransferOwn, legal: true, new_mask: 0x08, trap: None },
+    // TransferOwn rows are DEST-side (sci armTransfer): a legal transfer
+    // keeps the container ACTIVE and adds the boolean owns_children bit;
+    // the source value retires to CONSUMED separately. Each illegal row
+    // mirrors one sci trapReport message verbatim. The first three rows
+    // are the sci base set; the following eight are the dest-side rows
+    // appended by the B5-transfer batch.
+    Transition { prev_mask: 0x01, op: Op::TransferOwn, legal: true, new_mask: 0x401, trap: None },
     Transition { prev_mask: 0x10, op: Op::TransferOwn, legal: false, new_mask: 0x00, trap: Some(TrapKind::TransferIntoBorrow) },
     Transition { prev_mask: 0x101, op: Op::TransferOwn, legal: false, new_mask: 0x00, trap: Some(TrapKind::TransferIntoImmutable) },
+    Transition { prev_mask: 0x401, op: Op::TransferOwn, legal: true, new_mask: 0x401, trap: None },
+    Transition { prev_mask: 0x08, op: Op::TransferOwn, legal: false, new_mask: 0x00, trap: Some(TrapKind::UseAfterMove) },
+    Transition { prev_mask: 0x02, op: Op::TransferOwn, legal: false, new_mask: 0x00, trap: Some(TrapKind::BorrowConflict) },
+    Transition { prev_mask: 0x04, op: Op::TransferOwn, legal: false, new_mask: 0x00, trap: Some(TrapKind::BorrowConflict) },
+    Transition { prev_mask: 0x20, op: Op::TransferOwn, legal: false, new_mask: 0x00, trap: Some(TrapKind::TransferIntoBorrow) },
+    Transition { prev_mask: 0x200, op: Op::TransferOwn, legal: false, new_mask: 0x00, trap: Some(TrapKind::TransferIntoBorrow) },
+    Transition { prev_mask: 0x11, op: Op::TransferOwn, legal: false, new_mask: 0x00, trap: Some(TrapKind::TransferIntoBorrow) },
+    Transition { prev_mask: 0x100, op: Op::TransferOwn, legal: false, new_mask: 0x00, trap: Some(TrapKind::TransferIntoImmutable) },
 ];
 
 pub fn lookup(prev_mask: u16, op: Op) -> Option<Transition> {

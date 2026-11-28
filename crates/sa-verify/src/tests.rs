@@ -705,3 +705,143 @@ fn borrow_arg_to_by_value_scalar_param_is_rejected() {
     let errors = verify(&program(vec![callee, caller]), &VerifyOptions::default()).unwrap_err();
     assert!(has_trap(&errors, Trap::CapabilityMismatch), "{errors:?}");
 }
+
+// ---- B5/transfer（sci armTransfer parity，25027 zcode 2026-11-28）----
+
+fn transfer_case(instrs: Vec<Instruction>) -> Program {
+    program(vec![function("main", vec![block("L_entry", instrs, 1)])])
+}
+
+fn transfer(container: &str, value: &str, line: u32) -> Instruction {
+    ins(
+        InstructionKind::Transfer {
+            container: Operand::Reg(container.into()),
+            value: Operand::Reg(value.into()),
+        },
+        line,
+    )
+}
+
+#[test]
+fn transfer_moves_ownership_into_container() {
+    // sci armTransfer happy path: value retires to Consumed, container
+    // stays ACTIVE and gains owns_children; exit leak check is satisfied.
+    let source = transfer_case(vec![
+        ins(InstructionKind::Alloc { size: Operand::Int(8) }, 2).with_dest("x"),
+        ins(InstructionKind::Alloc { size: Operand::Int(8) }, 3).with_dest("y"),
+        transfer("x", "y", 4),
+        ins(InstructionKind::Release { reg: "x".into() }, 5),
+        ins(InstructionKind::Return { value: None }, 6),
+    ]);
+    let report = verify(&source, &VerifyOptions::default()).expect("legal transfer");
+    assert_eq!(report.instructions_checked, 5);
+}
+
+#[test]
+fn transfer_into_borrowed_container_is_rejected() {
+    // sci: destination is a borrow view -> transfer_into_borrow.
+    let source = transfer_case(vec![
+        ins(InstructionKind::Alloc { size: Operand::Int(8) }, 2).with_dest("x"),
+        ins(InstructionKind::Alloc { size: Operand::Int(8) }, 3).with_dest("y"),
+        ins(InstructionKind::Borrow { src: Operand::Reg("x".into()), mutable: false }, 4).with_dest("b"),
+        transfer("b", "y", 5),
+        ins(InstructionKind::Release { reg: "b".into() }, 6),
+        ins(InstructionKind::Return { value: None }, 7),
+    ]);
+    let errors = verify(&source, &VerifyOptions::default()).unwrap_err();
+    assert!(has_trap(&errors, Trap::TransferIntoBorrow), "{errors:?}");
+}
+
+#[test]
+fn transfer_with_active_borrows_is_rejected() {
+    // sci hasActiveBorrowRefs: the container is exclusively borrowed.
+    let source = transfer_case(vec![
+        ins(InstructionKind::Alloc { size: Operand::Int(8) }, 2).with_dest("x"),
+        ins(InstructionKind::Alloc { size: Operand::Int(8) }, 3).with_dest("y"),
+        ins(InstructionKind::Borrow { src: Operand::Reg("x".into()), mutable: true }, 4).with_dest("b"),
+        transfer("x", "y", 5),
+        ins(InstructionKind::Release { reg: "b".into() }, 6),
+        ins(InstructionKind::Return { value: None }, 7),
+    ]);
+    let errors = verify(&source, &VerifyOptions::default()).unwrap_err();
+    assert!(has_trap(&errors, Trap::BorrowConflict), "{errors:?}");
+}
+
+#[test]
+fn transfer_into_consumed_container_is_rejected() {
+    // sci: container no longer active -> use_after_move.
+    let source = transfer_case(vec![
+        ins(InstructionKind::Alloc { size: Operand::Int(8) }, 2).with_dest("x"),
+        ins(InstructionKind::Alloc { size: Operand::Int(8) }, 3).with_dest("y"),
+        ins(InstructionKind::Move { src: Operand::Reg("x".into()) }, 4),
+        transfer("x", "y", 5),
+        ins(InstructionKind::Return { value: None }, 6),
+    ]);
+    let errors = verify(&source, &VerifyOptions::default()).unwrap_err();
+    assert!(has_trap(&errors, Trap::UseAfterMove), "{errors:?}");
+}
+
+#[test]
+fn transfer_requires_register_operands() {
+    // sci: non-register operand -> transfer_into_borrow
+    // "transfer requires register operands".
+    let source = transfer_case(vec![
+        ins(InstructionKind::Alloc { size: Operand::Int(8) }, 2).with_dest("x"),
+        ins(InstructionKind::Transfer {
+            container: Operand::Int(8),
+            value: Operand::Reg("x".into()),
+        }, 3),
+        ins(InstructionKind::Return { value: None }, 4),
+    ]);
+    let errors = verify(&source, &VerifyOptions::default()).unwrap_err();
+    assert!(has_trap(&errors, Trap::TransferIntoBorrow), "{errors:?}");
+}
+
+#[test]
+fn transfer_own_truth_table_covers_sci_trap_masks() {
+    // 真值表逐掩码覆盖 sci 四种报文（批复 #19201 第②点要求）。
+    use crate::mask::{lookup, Op, TrapKind};
+
+    // transfer_into_borrow: borrow_view / ffi_borrow / interior_ptr /
+    // active+borrow_view 组合。
+    for mask in [0x10u16, 0x20, 0x200, 0x11] {
+        let row = lookup(mask, Op::TransferOwn)
+            .unwrap_or_else(|| panic!("mask {mask:#x} missing from TRUTH_TABLE"));
+        assert!(!row.legal, "{mask:#x}");
+        assert!(
+            matches!(row.trap, Some(TrapKind::TransferIntoBorrow)),
+            "{mask:#x} -> {row:?}"
+        );
+    }
+    // transfer_into_immutable: 纯 immutable 位与 active|immutable 组合。
+    for mask in [0x100u16, 0x101] {
+        let row = lookup(mask, Op::TransferOwn)
+            .unwrap_or_else(|| panic!("mask {mask:#x} missing from TRUTH_TABLE"));
+        assert!(!row.legal, "{mask:#x}");
+        assert!(
+            matches!(row.trap, Some(TrapKind::TransferIntoImmutable)),
+            "{mask:#x} -> {row:?}"
+        );
+    }
+    // consumed container -> use_after_move；locked -> borrow_conflict。
+    for (mask, expected) in [
+        (0x08u16, TrapKind::UseAfterMove),
+        (0x02, TrapKind::BorrowConflict),
+        (0x04, TrapKind::BorrowConflict),
+    ] {
+        let row = lookup(mask, Op::TransferOwn)
+            .unwrap_or_else(|| panic!("mask {mask:#x} missing from TRUTH_TABLE"));
+        assert!(!row.legal, "{mask:#x}");
+        assert!(
+            matches!(row.trap, Some(ref t) if std::mem::discriminant(t) == std::mem::discriminant(&expected)),
+            "{mask:#x} -> {row:?}"
+        );
+    }
+    // 合法 dest 行：保持 ACTIVE 并加 owns_children（布尔位）。
+    let row = lookup(0x01, Op::TransferOwn).expect("0x01 row");
+    assert!(row.legal);
+    assert_eq!(row.new_mask, 0x401);
+    let row = lookup(0x401, Op::TransferOwn).expect("0x401 row");
+    assert!(row.legal);
+    assert_eq!(row.new_mask, 0x401);
+}

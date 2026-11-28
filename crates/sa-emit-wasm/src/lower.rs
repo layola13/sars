@@ -1903,6 +1903,8 @@ fn lower_instruction(
             store_or_drop(out, ins, regs);
         }
         InstructionKind::Release { .. }
+        // sci: transfer is a verifier-visible annotation, runtime no-op.
+        | InstructionKind::Transfer { .. }
         | InstructionKind::VaStart
         | InstructionKind::VaEnd
         | InstructionKind::Native { .. }
