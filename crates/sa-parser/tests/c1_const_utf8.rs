@@ -1,4 +1,7 @@
 //! C1: strict UTF-8 literal validation at the const parse site.
+//! B14 (sci parity): all malformed @const literals now report
+//! ForbiddenSyntax(1001) "InvalidLiteral", matching sci's flatten failure.
+use sa_ir::Trap;
 use sa_parser::parse_source;
 
 #[test]
@@ -13,7 +16,9 @@ fn c1_const_unknown_escape_rejected() {
     let src = "@const A = utf8:\"a\\q\"\n";
     let diags = parse_source(src, "t.sa").expect_err("unknown escape must be rejected");
     assert!(!diags.is_empty());
-    assert!(diags.iter().any(|d| d.message.contains("invalid constant value")));
+    assert!(diags.iter().any(|d| {
+        d.trap == Trap::ForbiddenSyntax && d.message.contains("InvalidLiteral")
+    }));
 }
 
 #[test]

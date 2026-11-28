@@ -267,8 +267,12 @@ fn const_value(tokens: &[Token]) -> Option<ConstValue> {
                 .find(|t| t.kind == TokenKind::Number)
             {
                 if let Ok(size) = size_token.text.parse::<usize>() {
-                    bytes.resize(size, 0);
-                    bytes.truncate(size);
+                    // B14 (sci parity, common/const_decl.zig:362-377): a field's
+                    // literal must have exactly the declared size. sars used to
+                    // silently resize/truncate, masking malformed literals.
+                    if bytes.len() != size {
+                        return None;
+                    }
                 }
             }
             fields.push(ConstValue::Bytes(bytes));
@@ -281,11 +285,20 @@ fn const_value(tokens: &[Token]) -> Option<ConstValue> {
         let mut bytes = Vec::new();
         let mut i = 0usize;
         while i < src.len() {
-            if src[i] == b'\\' && i + 3 < src.len() && src[i + 1] == b'x' {
-                if let Ok(byte) = u8::from_str_radix(&raw[i + 2..i + 4], 16) {
-                    bytes.push(byte);
-                    i += 4;
-                    continue;
+            if src[i] == b'\\' && i + 1 < src.len() && src[i + 1] == b'x' {
+                // B14 (sci parity, common/const_decl.zig:311-330): hex escapes
+                // are strict \xNN. A malformed escape is an InvalidLiteral,
+                // not a literal backslash to be smuggled into the value.
+                if i + 3 >= src.len() {
+                    return None;
+                }
+                match u8::from_str_radix(&raw[i + 2..i + 4], 16) {
+                    Ok(byte) => {
+                        bytes.push(byte);
+                        i += 4;
+                        continue;
+                    }
+                    Err(_) => return None,
                 }
             }
             bytes.push(src[i]);
@@ -427,6 +440,28 @@ mod tests {
             ])
         );
         assert_eq!(c.ty, Some(PrimType::I32));
+    }
+
+    #[test]
+    fn malformed_const_literals_are_rejected() {
+        // B14 (sci parity): struct field size must match the literal byte
+        // length; hex escapes must be strict \xNN. Both are InvalidLiteral.
+        for src in [
+            "@const A = struct { a: 4 = hex:\\x01\\x00 }\n@main() -> i32:\nL:\n return 0\n",
+            "@const A = struct { a: 2 = hex:\\xZZ }\n@main() -> i32:\nL:\n return 0\n",
+        ] {
+            let res = parse_source(src, "t.sa");
+            assert!(
+                res.is_err(),
+                "malformed const must produce a diagnostic: {src}"
+            );
+            let diags = res.unwrap_err();
+            assert!(
+                diags.iter().any(|d| d.message == "InvalidLiteral"),
+                "expected InvalidLiteral diagnostic: {:?}",
+                diags
+            );
+        }
     }
 
     #[test]

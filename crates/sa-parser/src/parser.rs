@@ -209,7 +209,17 @@ impl Parser {
             }
             "@const" => match parse_header::parse_const(line) {
                 Ok(c) => self.program.consts.push(c),
-                Err(m) => self.diags.push(err(line, &m)),
+                // B14 (sci parity): malformed @const literals are
+                // ForbiddenSyntax(1001) "InvalidLiteral", not the generic
+                // ParseError(2001) used for other directive syntax errors.
+                Err(_) => {
+                    let loc = line.first().map(|t| t.loc.clone()).unwrap_or_default();
+                    self.diags.push(Diagnostic::new(
+                        Trap::ForbiddenSyntax,
+                        "InvalidLiteral",
+                        loc,
+                    ));
+                }
             },
             "@extern" => match parse_header::parse_signature(line, FunctionKind::External) {
                 Ok(sig) => self.program.externs.push(sig),
