@@ -812,7 +812,11 @@ fn transfer_with_active_borrows_is_rejected() {
         ins(InstructionKind::Return { value: None }, 7),
     ]);
     let errors = verify(&source, &VerifyOptions::default()).unwrap_err();
-    assert!(has_trap(&errors, Trap::BorrowConflict), "{errors:?}");
+    // B5-fix (#19691): after `borrow_mut x` the container x is LOCKED_MUT
+    // without ACTIVE (0x04). sci armTransfer checks ACTIVE before borrow
+    // refs and reports use_after_move 1009 for this state (case9), so this
+    // assertion follows the sci oracle rather than borrow_conflict.
+    assert!(has_trap(&errors, Trap::UseAfterMove), "{errors:?}");
 }
 
 #[test]
@@ -871,11 +875,13 @@ fn transfer_own_truth_table_covers_sci_trap_masks() {
             "{mask:#x} -> {row:?}"
         );
     }
-    // consumed container -> use_after_move；locked -> borrow_conflict。
+    // B5-fix (#19691): consumed (0x08) and locked-without-ACTIVE (0x02/0x04)
+    // containers all report use_after_move, matching sci armTransfer's
+    // ACTIVE check that precedes hasActiveBorrowRefs (case8b/case9).
     for (mask, expected) in [
         (0x08u16, TrapKind::UseAfterMove),
-        (0x02, TrapKind::BorrowConflict),
-        (0x04, TrapKind::BorrowConflict),
+        (0x02, TrapKind::UseAfterMove),
+        (0x04, TrapKind::UseAfterMove),
     ] {
         let row = lookup(mask, Op::TransferOwn)
             .unwrap_or_else(|| panic!("mask {mask:#x} missing from TRUTH_TABLE"));

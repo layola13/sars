@@ -856,14 +856,17 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
                 );
                 return;
             }
-            // sars encodes an actively-borrowed container as LOCKED_* bits
-            // without the ACTIVE bit (sci uses active|locked), so the locked
-            // test must precede the active test to keep sci's borrow_conflict
-            // message for that state.
-            if cmask & (bit::LOCKED_READ | bit::LOCKED_MUT) != 0 {
+            // B5-fix (#19691): align check order with sci armTransfer
+            // (verify_body_arms_alloc_borrow.zig:276-281). sci tests the
+            // ACTIVE bit BEFORE hasActiveBorrowRefs, so a container whose
+            // mask lost ACTIVE reports use_after_move 1009, not
+            // borrow_conflict. sars models a borrow as LOCKED_* without
+            // ACTIVE, so this fixes case8b/case9 (0x02/0x04): E1008 ->
+            // E1009, matching sci's oracle (actual_mask 2/4, trap 1009).
+            if cmask & bit::ACTIVE == 0 {
                 ctx.report(
-                    Trap::BorrowConflict,
-                    "container has active borrows",
+                    Trap::UseAfterMove,
+                    "cannot transfer into a consumed container",
                     loc,
                     Some(container_reg),
                     None,
@@ -871,10 +874,14 @@ pub fn transfer<S: RegStateBackend>(ins: &Instruction, state: &mut S, ctx: &mut 
                 );
                 return;
             }
-            if cmask & bit::ACTIVE == 0 {
+            // The active|locked combination (ACTIVE present together with
+            // LOCKED bits) still maps to sci's hasActiveBorrowRefs ->
+            // borrow_conflict. Kept for that state; does not fire for the
+            // LOCKED-without-ACTIVE case8b/case9 above (now use_after_move).
+            if cmask & (bit::LOCKED_READ | bit::LOCKED_MUT) != 0 {
                 ctx.report(
-                    Trap::UseAfterMove,
-                    "cannot transfer into a consumed container",
+                    Trap::BorrowConflict,
+                    "container has active borrows",
                     loc,
                     Some(container_reg),
                     None,

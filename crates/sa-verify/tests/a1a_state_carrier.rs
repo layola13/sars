@@ -86,8 +86,8 @@ fn a1a_truth_table_sci_base_plus_transfer_dest_rows() {
         // dest-side TransferOwn rows added by the B5-transfer batch.
         (0x401, Op::TransferOwn, true, 0x401, None),
         (0x08, Op::TransferOwn, false, 0x00, Some(TrapKind::UseAfterMove)),
-        (0x02, Op::TransferOwn, false, 0x00, Some(TrapKind::BorrowConflict)),
-        (0x04, Op::TransferOwn, false, 0x00, Some(TrapKind::BorrowConflict)),
+        (0x02, Op::TransferOwn, false, 0x00, Some(TrapKind::UseAfterMove)),
+        (0x04, Op::TransferOwn, false, 0x00, Some(TrapKind::UseAfterMove)),
         (0x20, Op::TransferOwn, false, 0x00, Some(TrapKind::TransferIntoBorrow)),
         (0x200, Op::TransferOwn, false, 0x00, Some(TrapKind::TransferIntoBorrow)),
         (0x11, Op::TransferOwn, false, 0x00, Some(TrapKind::TransferIntoBorrow)),
