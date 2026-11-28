@@ -123,7 +123,7 @@ fn flatten_rec(
         }
         ctx.visited.insert(key);
         ctx.stack.push(nested_key);
-        macros::collect_macros(&content, &mut ctx.macros);
+        macros::collect_macros(&content, &nested_from, &mut ctx.macros, diags);
         let content = if ctx.opts.expand_macros {
             macros::expand_text(&content, &ctx.macros, 0, ctx.opts.max_depth, diags)
         } else {
@@ -180,8 +180,9 @@ fn precollect_macros(
     ctx: &mut Context,
     depth: usize,
     seen: &mut HashSet<String>,
+    diags: &mut Vec<Diagnostic>,
 ) {
-    macros::collect_macros(src, &mut ctx.macros);
+    macros::collect_macros(src, from, &mut ctx.macros, diags);
     if depth >= ctx.opts.max_depth {
         return;
     }
@@ -198,7 +199,7 @@ fn precollect_macros(
             .resolver
             .resolve_path(&path, from)
             .unwrap_or_else(|| path.clone());
-        precollect_macros(&content, &nested_from, ctx, depth + 1, seen);
+        precollect_macros(&content, &nested_from, ctx, depth + 1, seen, diags);
     }
 }
 
@@ -244,10 +245,10 @@ pub fn flatten_source(
     };
     let mut diags = Vec::new();
     ctx.stack.push(canonical_key(file));
-    macros::collect_macros(src, &mut ctx.macros);
+    macros::collect_macros(src, file, &mut ctx.macros, &mut diags);
     if opts.expand_macros {
         let mut seen = HashSet::new();
-        precollect_macros(src, file, &mut ctx, 0, &mut seen);
+        precollect_macros(src, file, &mut ctx, 0, &mut seen, &mut diags);
     }
     let expanded = if opts.expand_macros {
         macros::expand_text(src, &ctx.macros, 0, opts.max_depth, &mut diags)

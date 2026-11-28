@@ -13,9 +13,18 @@ fn is_param_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-pub(crate) fn collect_macros(text: &str, macros: &mut HashMap<String, MacroDef>) {
-    let mut lines = text.lines();
-    while let Some(line) = lines.next() {
+pub(crate) fn collect_macros(
+    text: &str,
+    file: &str,
+    macros: &mut HashMap<String, MacroDef>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    // B3: a duplicate macro name within the *same file* is a diagnostic, not
+    // a silent overwrite. Cross-file (import precollect) shadowing stays legal,
+    // so the seen set is local to this call.
+    let mut seen_names: HashSet<String> = HashSet::new();
+    let mut lines = text.lines().enumerate();
+    while let Some((line_idx, line)) = lines.next() {
         let trimmed = line.trim();
         let Some(rest) = trimmed.strip_prefix("[MACRO]") else {
             continue;
@@ -43,7 +52,7 @@ pub(crate) fn collect_macros(text: &str, macros: &mut HashMap<String, MacroDef>)
                 .collect()
         };
         let mut body = Vec::new();
-        for body_line in lines.by_ref() {
+        for (_, body_line) in lines.by_ref() {
             if body_line.trim() == "[END_MACRO]" {
                 break;
             }
@@ -51,6 +60,15 @@ pub(crate) fn collect_macros(text: &str, macros: &mut HashMap<String, MacroDef>)
             if !line.is_empty() {
                 body.push(line.to_string());
             }
+        }
+        if !seen_names.insert(name.clone()) {
+            let diag = Diagnostic::new(
+                Trap::DuplicateDef,
+                format!("duplicate macro definition '{name}' in {file}"),
+                SourceLoc::new(file, (line_idx + 1) as u32, 1),
+            )
+            .with_hint("each macro name must be unique within a file");
+            diags.push(diag);
         }
         macros.insert(name.clone(), MacroDef { name, params, body });
     }
@@ -675,7 +693,8 @@ mod tests {
 
     fn macros(src: &str) -> HashMap<String, MacroDef> {
         let mut out = HashMap::new();
-        collect_macros(src, &mut out);
+        let mut diags = Vec::new();
+        collect_macros(src, "t.sa", &mut out, &mut diags);
         out
     }
 
